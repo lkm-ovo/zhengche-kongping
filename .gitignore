@@ -1,0 +1,5 @@
+game/.godot/
+yard-save.json
+yard-save.tmp
+build/
+__pycache__/
