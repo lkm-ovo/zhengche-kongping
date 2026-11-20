@@ -7,29 +7,32 @@ const Shapes = preload("res://workshop_shapes.gd")
 const Steam = preload("res://steam.gdshader")
 const Paper = preload("res://paper.gdshader")
 const LineMachine = preload("res://line_machine.gd")
+const GarageStock = preload("res://garage_stock.gd")
+const FinishedCrate = preload("res://finished_crate.gd")
+const Glass = preload("res://glass.gdshader")
 const COUNTER_Z = -.20
 const COUNTER_TOP = .935
 const COUNTER_FRONT = .54
-const STOCK_X = -2.025
 const STRIP_X = -1.15
 const RINSE_X = -.33
 const STEAM_X = .39
 const DRAIN_X = 1.015
 const PACK_X = 1.58
-const SALES_X = 2.17
+const TERMINAL_X = 2.23
 const FAUCET = Vector3(RINSE_X+.010,1.207,COUNTER_Z-.091)
 const FAUCET_VALVE = Vector3(RINSE_X+.116,1.055,COUNTER_Z-.248)
 const SANITIZER_TRAY = Vector3(STEAM_X,.970,COUNTER_Z)
 const DRAIN_PIN = Vector3(DRAIN_X,1.017,COUNTER_Z)
 const CLEAN_CRATE = Vector3(PACK_X,COUNTER_TOP,COUNTER_Z)
-const SALE_SHELF = Vector3(SALES_X,COUNTER_TOP,COUNTER_Z)
+const SALE_BOOTH = Vector3(3.99,0,5.48)
 const SCRAP_BIN = Vector3(-1.59,0,.535)
-const STATIONS = [[STOCK_X,"来料"],[STRIP_X,"脱标"],[RINSE_X,"冲洗"],
-	[STEAM_X,"消毒"],[DRAIN_X,"沥干"],[PACK_X,"装箱"],[SALES_X,"待售"]]
+const STATIONS = [[STRIP_X,"脱标"],[RINSE_X,"冲洗"],
+	[STEAM_X,"消毒"],[DRAIN_X,"沥干"],[PACK_X,"装筐"],[TERMINAL_X,"站务"]]
 const AUTOMATION_X = -10.36
 const AUTOMATION_Z = -5.40
 const AUTOMATION_SPACING = 2.96
 const AUTOMATION_ORDER = [2,0,1,5,Yard.SANITIZER,3,4,6]
+const CART_HOME = Vector3(5.56,.014,3.74)
 
 var font: SystemFont
 var targets: Dictionary = {}
@@ -42,6 +45,7 @@ var chamber_light: OmniLight3D
 var faucet_valve: MeshInstance3D
 var cabinet_closed: float = 0.0
 var room := ProcessingRoom.new()
+var garage := GarageStock.new()
 var machines: Array[LineMachine] = []
 var conveyors: Array = []
 var glass_on_line: Array[Node3D] = []
@@ -50,15 +54,19 @@ var line_bottle_heights := PackedFloat32Array()
 var outbound_cartons: Array[Node3D] = []
 var machine_offsets := PackedFloat32Array()
 var display_crates: Array = []
-var crates_available: Array = []
-var crate_bottles: Array = []
-var crate_counts: Array[Label3D] = []
+var cart: Node3D
+var cart_basket: Node3D
+var cart_crate_deck: MeshInstance3D
+var cart_crate_posts: Node3D
+var cart_crate_rack: Node3D
+var cart_boxes: Array[FinishedCrate] = []
+var cart_bottles: Array[MeshInstance3D] = []
 var inbound_truck: Node3D
 var queued_trucks: Array = []
 var yard_pallets: Array = []
 var outgoing_pallets: Array = []
-var clean_samples: Array[MeshInstance3D] = []
-var sale_samples: Array[MeshInstance3D] = []
+var clean_box: FinishedCrate
+var window_count: Label3D
 var line_phase: float = 0.0
 var truck_position: float = 19.0
 var truck_timer: float = 0.0
@@ -67,6 +75,10 @@ var mat_cache: Dictionary = {}
 var rounded_cache: Dictionary = {}
 var stock_meshes: Array = []
 var stock_labels: Array = []
+var bottle_bodies: Array[Mesh] = []
+var bottle_rims: Array[Mesh] = []
+var finished_glass: Array[ShaderMaterial] = []
+var bottle_detail_mesh := SphereMesh.new()
 var label_offcuts: Array[MeshInstance3D] = []
 var table_scraper: Node3D
 var table_scraper_level: int = -1
@@ -161,9 +173,24 @@ func target(id: String, label: String, at: Vector3, radius: float, reach: float 
 func build() -> void:
 	font = SystemFont.new()
 	font.font_names = PackedStringArray(["Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC"])
+	bottle_detail_mesh.radial_segments = 12
+	bottle_detail_mesh.rings = 7
+	bottle_detail_mesh.height = 2.0
+	bottle_detail_mesh.radius = 1.0
 	for i in Yard.NAMES.size():
-		stock_meshes.append(Shapes.lathe(Yard.BOTTLE_PROFILES[i],19))
+		var profile: Array = [[0.0,0.0]] + Yard.BOTTLE_PROFILES[i]
+		var rim: Array = profile.back()
+		profile.append_array([[rim[0],rim[1]*.72],[rim[0]-.012,rim[1]*.66],[rim[0]-.012,0.0]])
+		stock_meshes.append(Shapes.lathe(profile,19))
 		stock_labels.append(Shapes.lathe(Shapes.label_profile(Yard.BOTTLE_PROFILES[i],.067,.13),16,-.88,3.6))
+		bottle_bodies.append(Shapes.lathe(Yard.BOTTLE_PROFILES[i],56))
+		var top: float = rim[0]
+		var lip: float = rim[1]
+		bottle_rims.append(Shapes.lathe([[top-.034,lip*.71],[top-.009,lip*.71],[top-.002,lip*.79],[top,lip]],42))
+		var glass := ShaderMaterial.new()
+		glass.shader = Glass
+		glass.set_shader_parameter("glass",Color(Yard.GLASS[i]))
+		finished_glass.append(glass)
 	var env := WorldEnvironment.new()
 	var settings := Environment.new()
 	var sky := Sky.new()
@@ -254,6 +281,11 @@ func build() -> void:
 
 	add_child(room)
 	room.build(self)
+	add_child(garage)
+	garage.build(self)
+	target("stock","车库来料区",GarageStock.PICK_POINT,1.05,3.85)
+	build_cart()
+	build_sale_window()
 	hand_line(wood,steel)
 	bench(Vector3(-5.3, 0, -.8), wood, steel)
 	shelf(Vector3(-6.0, 0, -2.2))
@@ -290,7 +322,7 @@ func build() -> void:
 		yard_pallets.append(stack)
 	for i in 8:
 		var stack := Node3D.new()
-		stack.position = Vector3(8.3+(i%4)*1.12,0,-8.0-(i/4)*1.37)
+		stack.position = Vector3(3.72+(i%4)*1.03,0,-8.0-(i/4)*1.37)
 		add_child(stack)
 		pallet(Vector3.ZERO,stack,3 if i%3 == 0 else 4)
 		outgoing_pallets.append(stack)
@@ -341,11 +373,11 @@ func drop_label_shavings(paper: Material, edge: Vector3, count: int, shape: Vect
 func make_scraper(parent: Node3D, level: int = 0) -> Node3D:
 	var scraper := Node3D.new()
 	parent.add_child(scraper)
-	var steel: Material = surface(["777d76","b7c3c0","c4cbc1","afbdb8"][level],false,2)
+	var steel: Material = surface(["777367","b7c3c0","c4cbc1","afbdb8"][level],false,5 if level == 0 else 2)
 	var handle: Material = material(["554435","386365","36584d","744a2e"][level],.76)
 	var sleeve_color: Material = material(["655c4c","667a7a","738074","9c7b51"][level],.56,.27)
 	scraper.set_meta("level",level)
-	mesh_at(Shapes.scraper_blade([1.0,.86,1.04,1.13][level],[0.0,0.0,.010,.013][level]),Vector3.ZERO,steel,scraper)
+	mesh_at(Shapes.scraper_blade([.80,.86,1.04,1.13][level],[0.0,0.0,.010,.013][level]),Vector3.ZERO,steel,scraper)
 	rounded(Vector3(0,-.017,0),Vector3(.028,.088,.020),.009,handle,scraper)
 	rounded(Vector3(0,.025,0),Vector3(.029,.016,.018),.004,sleeve_color,scraper)
 	for y in [-.039,-.026,-.013,-.001]:
@@ -422,34 +454,14 @@ func hand_line(wood: Material, steel: Material) -> void:
 				var arrow := box(Vector3(midpoint-.032,.015,1.055+side*.030),Vector3(.089,.006,.015),tape)
 				arrow.rotation.y = side*.70
 
-	for i in 3:
-		var crate_at := Vector3(STOCK_X+(i-1)*.284,COUNTER_TOP,COUNTER_Z)
-		var bottle_crate := crate(crate_at,["8a633c","6e7749","3a6c66"][i],self,Vector3(.252,.18,.365))
-		crates_available.append(bottle_crate)
-		rounded(Vector3(0,.093,.200),Vector3(.144,.059,.010),.003,plate,bottle_crate)
-		crate_counts.append(text_at("",Vector3(0,.093,.207),35,.0011,"e7ddbc",bottle_crate))
-		var stock: Array = []
-		for j in 6:
-			var group := Node3D.new()
-			group.position = Vector3((j%2-.5)*.112,.044,-.121+floorf(j/2.0)*.121)
-			bottle_crate.add_child(group)
-			group.rotation.y = (j*2.49+i*.43)-.8
-			tiny_bottle(group,Vector3.ZERO,i)
-			stock.append(group)
-		crate_bottles.append(stock)
-	var clean_box := crate(CLEAN_CRATE,"4d796e",self,Vector3(.48,.18,.33))
-	clean_samples = fill_crate_samples(clean_box)
-	crate(Vector3(STOCK_X,.04,COUNTER_Z),"a17b40")
-	crate(Vector3(STOCK_X,.31,COUNTER_Z),"646c4c")
+	clean_box = finished_crate(CLEAN_CRATE,self)
 	recycle_bin(SCRAP_BIN)
 	strip_tools()
 	bench_sink()
 	bench_sanitation()
-	make_sales_shelf()
-	kiosk(SALE_SHELF+Vector3(0,0,-.265))
+	kiosk(Vector3(TERMINAL_X,COUNTER_TOP,COUNTER_Z-.265))
 	target("bench","手工脱标台",Vector3(STRIP_X,COUNTER_TOP+.06,.24),.47)
-	target("stock","来料筐",Vector3(STOCK_X,COUNTER_TOP+.16,COUNTER_Z+.19),.43)
-	target("ship","成品筐",CLEAN_CRATE+Vector3(0,.125,.169),.25)
+	target("clean_crate","成品筐",CLEAN_CRATE+Vector3.UP*.14,.26)
 
 
 func bench_sink() -> void:
@@ -646,6 +658,90 @@ func crate(at: Vector3, color: String, parent: Node3D = self, dimensions: Vector
 	return base
 
 
+func build_cart() -> void:
+	cart = Node3D.new()
+	cart.position = CART_HOME
+	add_child(cart)
+	var steel: Material = surface("56685e",false,5)
+	var rubber: Material = material("282c28",.90)
+	rounded(Vector3(0,.238,0),Vector3(.64,.07,.63),.014,steel,cart)
+	cart_basket = crate(Vector3(0,.275,-.013),"806748",cart,Vector3(.57,.17,.49))
+	for x in [-.28,.28]:
+		box(Vector3(x,.518,.277),Vector3(.035,.52,.042),steel,cart).rotation.x = .16
+		for z in [-.205,.211]:
+			var wheel: MeshInstance3D = cylinder(Vector3(x,.103,z),.102,.052,rubber,cart)
+			wheel.rotation.z = PI*.5
+			cylinder(Vector3(x,.103,z),.050,.061,steel,cart).rotation.z = PI*.5
+	rounded(Vector3(0,.779,.318),Vector3(.621,.046,.046),.016,rubber,cart)
+	for i in Yard.CART_CAPACITY:
+		var slot := Vector3((i%5-2)*.106,.031,(i/5-1.5)*.109)
+		var bottle: MeshInstance3D = mesh_at(stock_meshes[0],slot,bottle_material(0),cart_basket)
+		bottle.hide()
+		cart_bottles.append(bottle)
+	cart_crate_deck = rounded(Vector3.ZERO,Vector3(1.12,.042,.57),.01,steel,cart)
+	cart_crate_posts = Node3D.new()
+	cart.add_child(cart_crate_posts)
+	for x in [-.307,.307]:
+		for z in [-.244,.244]:
+			box(Vector3(x,.432,z),Vector3(.033,.32,.032),steel,cart_crate_posts)
+	cart_crate_rack = Node3D.new()
+	cart.add_child(cart_crate_rack)
+	rounded(Vector3(0,.364,0),Vector3(.55,.032,.56),.008,steel,cart_crate_rack)
+	for x in [-.257,.257]:
+		for z in [-.263,.263]:
+			box(Vector3(x,.181,z),Vector3(.026,.362,.026),steel,cart_crate_rack)
+	for i in Yard.CART_CRATE_LIMIT:
+		cart_boxes.append(finished_crate(Vector3.ZERO,cart))
+	cart.hide()
+
+
+func update_cart(model, worker: CharacterBody3D, working: bool) -> void:
+	cart.visible = model.cart_unlocked()
+	if not cart.visible:
+		targets.erase("cart")
+		return
+	if model.pushing_cart:
+		targets.erase("cart")
+		if not working:
+			var center: Vector3 = worker.position+Vector3.UP*.39
+			var forward: Vector3 = -worker.global_basis.z
+			var query := PhysicsRayQueryParameters3D.create(center,center+forward*1.12,1,[worker.get_rid()])
+			var hit: Dictionary = get_world_3d().direct_space_state.intersect_ray(query)
+			var distance: float = .84 if hit.is_empty() else maxf(.29,center.distance_to(hit.position)-.30)
+			cart.position = Vector3(center.x,.014,center.z)+forward*distance
+			cart.rotation.y = worker.rotation.y
+	else:
+		if model.parked_at.is_finite():
+			cart.position = model.parked_at
+			cart.rotation.y = model.parked_angle
+		if not targets.has("cart"):
+			target("cart","小推车",cart.position+Vector3.UP*.42,.40,1.85)
+	var cargo: Array[Vector2i] = model.carried if model.pushing_cart else model.parked_load
+	var count: int = model.cart_crates.size()
+	cart_basket.visible = count == 0 or not cargo.is_empty()
+	var deck_y: float = .61 if not cargo.is_empty() else .275
+	cart_crate_deck.visible = count > 0
+	cart_crate_posts.visible = count > 0 and not cargo.is_empty()
+	cart_crate_deck.position = Vector3(0,deck_y-.021,-.025)
+	cart_crate_rack.visible = count == Yard.CART_CRATE_LIMIT
+	cart_crate_rack.position = Vector3(-.278,deck_y,-.025)
+	for i in cart_boxes.size():
+		var loaded: bool = i < count
+		var cargo_box: FinishedCrate = cart_boxes[i]
+		cargo_box.visible = loaded
+		if loaded:
+			cargo_box.sync(model.cart_crates[i],model.crate_capacity())
+			cargo_box.position = Vector3(-.278 if i != 1 else .278,deck_y+(.38 if i == 2 else 0.0),-.025)
+	for index in cart_bottles.size():
+		var bottle: MeshInstance3D = cart_bottles[index]
+		bottle.visible = index < cargo.size()
+		if bottle.visible:
+			var kind: int = model.kind(cargo[index].x)
+			if bottle.mesh != stock_meshes[kind]:
+				bottle.mesh = stock_meshes[kind]
+				bottle.material_override = bottle_material(kind)
+
+
 func bottle_material(kind: int) -> Material:
 	return material(["395139","89a8a4","848f88","5b4025","557e65","5c5e3b"][kind],.20,.11)
 
@@ -670,30 +766,90 @@ func fill_crate_samples(parent: Node3D) -> Array[MeshInstance3D]:
 	return slots
 
 
-func make_sales_shelf() -> void:
-	var metal: Material = surface("54645b",false,5)
-	rounded(SALE_SHELF+Vector3(0,.021,0),Vector3(.551,.042,.385),.007,metal)
-	var awaiting := crate(SALE_SHELF+Vector3.UP*.041,"8e744a",self,Vector3(.484,.18,.33))
-	sale_samples = fill_crate_samples(awaiting)
-	target("sale_shelf","成品待售区",SALE_SHELF+Vector3(0,.166,.167),.216,2.85)
+func build_bottle_body(kind: int, glass: Material, root: Node3D) -> void:
+	var profile: Array = Yard.BOTTLE_PROFILES[kind]
+	var rim: Array = profile.back()
+	mesh_at(bottle_bodies[kind],Vector3.ZERO,glass,root)
+	mesh_at(bottle_rims[kind],Vector3.ZERO,material(Yard.GLASS[kind],.17,.13),root)
+	cylinder(Vector3(0,rim[0]-.034,0),rim[1]*.71,.0035,material("22281b",.47,.05),root)
+	cylinder(Vector3(0,.005,0),float(profile[0][1])*.93,.008,glass,root)
 
 
-func display_bottle_stock(slots: Array[MeshInstance3D], stock: Array) -> void:
-	var index: int = 0
-	for type in Yard.NAMES.size():
-		var offset: int = type * Yard.CONDITION.size()
-		var count: int = mini(slots.size()-index,stock[offset]+stock[offset+1])
-		for i in count:
-			var bottle: MeshInstance3D = slots[index]
-			if bottle.mesh != stock_meshes[type]:
-				bottle.mesh = stock_meshes[type]
-				bottle.material_override = bottle_material(type)
-			bottle.show()
-			index += 1
-		if index == slots.size():
-			return
-	for i in range(index,slots.size()):
-		slots[i].hide()
+func build_finished_bottle(kind: int, root: Node3D) -> void:
+	build_bottle_body(kind,finished_glass[kind],root)
+	if kind == 4:
+		build_bottle_marble(root,finished_glass[kind])
+	elif kind == 5:
+		var closure := Node3D.new()
+		root.add_child(closure)
+		build_bottle_closure(closure,root,material("b36e51",.68))
+
+
+func bottle_detail(at: Vector3, dimensions: Vector3, finish: Material, parent: Node3D) -> MeshInstance3D:
+	var part := mesh_at(bottle_detail_mesh,at,finish,parent)
+	part.scale = dimensions
+	part.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	return part
+
+
+func build_bottle_marble(root: Node3D, glass: Material) -> MeshInstance3D:
+	var bead := bottle_detail(Vector3(0,.214,.025),Vector3.ONE*.014,material("c3ceae",.15,.3),root)
+	for z in [-.023,.023]:
+		bottle_detail(Vector3(0,.208,z),Vector3(.036,.006,.005),glass,root)
+	return bead
+
+
+func build_bottle_closure(closure: Node3D, root: Node3D, seal: Material) -> MeshInstance3D:
+	var top: float = Yard.BOTTLE_PROFILES[5].back()[0]
+	closure.position = Vector3(0,top,-.017)
+	cylinder(Vector3(0,.012,.017),.030,.015,material("d0c5a9",.38),closure)
+	var gasket := cylinder(Vector3(0,.003,.017),.023,.007,seal,closure)
+	var wire: Material = material("a8b2aa",.26,.7)
+	for x in [-.026,.026]:
+		var from := Vector3(x,.009,.01)
+		var to := Vector3(x,-.047,.032)
+		var arm := bottle_detail((from+to)*.5,Vector3(.0025,from.distance_to(to)*.5+.000675,.00205),wire,closure)
+		arm.quaternion = Quaternion(Vector3.UP,(to-from).normalized())
+		bottle_detail(Vector3(x,top-.041,.033),Vector3(.007,.006,.004),wire,root)
+	box(Vector3(0,-.038,.046),Vector3(.049,.013,.009),wire,closure)
+	return gasket
+
+
+func finished_crate(at: Vector3, parent: Node3D) -> FinishedCrate:
+	var result := FinishedCrate.new()
+	result.position = at
+	parent.add_child(result)
+	result.build(self)
+	return result
+
+
+func build_sale_window() -> void:
+	var booth := Node3D.new()
+	booth.position = SALE_BOOTH
+	booth.rotation.y = PI
+	add_child(booth)
+	var plaster: Material = surface("a5a391")
+	var trim: Material = surface("3c544c",false,5)
+	var counter: Material = surface("96744e",true)
+	box(Vector3(0,.52,.02),Vector3(1.88,1.04,.18),plaster,booth,true)
+	box(Vector3(0,1.18,-.94),Vector3(1.89,2.36,.14),plaster,booth,true)
+	for x in [-.95,.95]:
+		box(Vector3(x,1.18,-.46),Vector3(.14,2.36,1.09),plaster,booth,true)
+		box(Vector3(x,1.57,.065),Vector3(.09,.95,.13),trim,booth)
+	rounded(Vector3(0,1.059,.062),Vector3(2.03,.084,.67),.012,counter,booth,true)
+	box(Vector3(0,2.17,.018),Vector3(2.05,.33,.162),trim,booth,true)
+	box(Vector3(0,2.37,-.35),Vector3(2.24,.13,1.57),trim,booth,true)
+	text_at("成品收购窗口",Vector3(0,2.17,.110),67,.0045,"eee4c6",booth)
+	box(Vector3(-.51,1.151,.13),Vector3(.59,.105,.40),trim,booth)
+	rounded(Vector3(-.51,1.21,.13),Vector3(.59,.026,.40),.006,material("9aa99c",.4,.34),booth)
+	box(Vector3(.45,1.43,-.833),Vector3(.66,.29,.051),trim,booth)
+	window_count = text_at("",Vector3(.45,1.43,-.798),48,.0027,"e9dfbb",booth)
+	var warm := material("e1d3a7")
+	box(Vector3(0,1.982,-.29),Vector3(.88,.039,.11),warm,booth)
+	lamp(booth.to_global(Vector3(0,1.93,-.26)),"ffe9bd",.74,3.1)
+	for x in [-.86,.86]:
+		box(booth.to_global(Vector3(x,.012,1.04)),Vector3(.045,.01,.88),material("b99456"))
+	target("sale_window","成品收购窗口",booth.to_global(Vector3(0,1.49,.20)),.56,2.55)
 
 
 func recycle_bin(at: Vector3) -> void:
@@ -731,7 +887,7 @@ func kiosk(at: Vector3) -> void:
 	var screen := rounded(at+Vector3(0,.424,0),Vector3(.477,.286,.052),.009,material("1c2c2a"))
 	box(at+Vector3(0,.424,.030),Vector3(.416,.230,.011),material("5b9677"))
 	text_at("站务终端",at+Vector3(0,.458,.038),50,.0018,"e3e6ba")
-	text_at("采购 · 到货 · 销售",at+Vector3(0,.376,.039),46,.0010,"e3e6ba")
+	text_at("采购 · 到货",at+Vector3(0,.376,.039),46,.0010,"e3e6ba")
 	screen.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	target("office","站务终端",at+Vector3(0,.427,.051),.156,3.0)
 
@@ -880,15 +1036,10 @@ func animate_line(model, delta: float) -> void:
 
 func update_site(model, delta: float) -> void:
 	animate_line(model,delta)
-	display_bottle_stock(clean_samples,model.queues[Yard.CLEAN])
-	display_bottle_stock(sale_samples,model.queues[Yard.FOR_SALE])
-	for i in crate_bottles.size():
-		var available: int = model.available(i)
-		for j in crate_bottles[i].size():
-			crate_bottles[i][j].visible = j < available
-		var count: String = "%d 只" % available
-		if crate_counts[i].text != count:
-			crate_counts[i].text = count
+	clean_box.sync(model.bench_crate,model.crate_capacity())
+	targets.clean_crate.position.z = CLEAN_CRATE.z+clean_box.dimensions.z*.5
+	window_count.text = "待售  %d 只" % model.sum_queue(Yard.FOR_SALE)
+	garage.sync(model)
 	for i in yard_pallets.size():
 		yard_pallets[i].visible = model.phase >= 2 and i < ceili(float(model.in_yard())/Yard.PALLET_SIZE)
 	for i in outgoing_pallets.size():

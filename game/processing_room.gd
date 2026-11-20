@@ -128,7 +128,7 @@ func make_door() -> void:
 	shape.size = Vector3(.105,2.19,1.30)
 	door_shape.shape = shape
 	body.add_child(door_shape)
-	door_sign("仓库及卸货区",Vector3(2.51,2.49,1.54),-PI*.5)
+	door_sign("车库 · 收购窗口",Vector3(2.51,2.49,1.54),-PI*.5)
 	door_sign("旧瓶处理室",Vector3(2.79,2.49,1.54),PI*.5)
 	site.target("room_door","处理室滑门",DOOR_CENTER,.67,2.35)
 
@@ -163,28 +163,29 @@ func place_storage() -> void:
 	var locker: Material = site.surface("516259",false,5)
 	var dark: Material = site.material("303e39")
 	var handle: Material = site.material("a8a890",.52,.25)
-	var at := Vector3(-2.08,0,1.67)
+	var at := Vector3(-2.08,0,2.94)
 	site.rounded(at+Vector3(0,.85,0),Vector3(.73,1.70,.75),.013,locker,self,true)
 	for z in [-.181,.181]:
 		site.rounded(at+Vector3(.374,.85,z),Vector3(.032,1.55,.342),.008,locker,self)
 		for y in [1.42,1.47,1.52]:
 			site.box(at+Vector3(.392,y,z),Vector3(.013,.012,.19),dark,self)
 		site.rounded(at+Vector3(.404,.91,z+.10),Vector3(.036,.18,.025),.006,handle,self)
-	site.crate(Vector3(-2.05,1.70,1.68),"7b7251",self,Vector3(.54,.21,.47))
+	site.crate(at+Vector3(.03,1.70,.01),"7b7251",self,Vector3(.54,.21,.47))
 	for x in [-2.02,-1.69,-1.36]:
 		site.rounded(Vector3(x,1.84,SOUTH-.115),Vector3(.036,.051,.058),.006,metal,self)
 		site.rounded(Vector3(x,1.836,SOUTH-.160),Vector3(.035,.028,.074),.006,metal,self)
 	var towel: MeshInstance3D = site.rounded(Vector3(-1.69,1.62,SOUTH-.16),Vector3(.25,.40,.021),.008,site.surface("867b61",false,6),self)
 	towel.rotation.z = .071
 	site.rounded(Vector3(-1.62,1.608,SOUTH-.175),Vector3(.141,.432,.025),.008,site.surface("9c9076",false,6),self)
+	var shelf_z: float = 2.14
 	for i in 2:
 		var y: float = 1.27+i*.43
-		site.box(Vector3(-2.29,y,.62),Vector3(.60,.047,.66),trim,self,true)
-		for z in [.40,.83]:
+		site.box(Vector3(-2.29,y,shelf_z),Vector3(.60,.047,.66),trim,self,true)
+		for z in [shelf_z-.22,shelf_z+.21]:
 			site.box(Vector3(-2.43,y-.12,z),Vector3(.18,.23,.049),metal,self)
-	site.crate(Vector3(-2.27,1.295,.63),"645e44",self,Vector3(.41,.23,.50))
+	site.crate(Vector3(-2.27,1.295,shelf_z+.01),"645e44",self,Vector3(.41,.23,.50))
 	for j in 3:
-		var at_jar := Vector3(-2.28,1.735,.42+j*.205)
+		var at_jar := Vector3(-2.28,1.735,shelf_z-.20+j*.205)
 		var jar: Material = site.material(["b1a777","828e74","a2875f"][j],.38)
 		site.cylinder(at_jar+Vector3.UP*.105,.062,.21,jar,self)
 		site.cylinder(at_jar+Vector3.UP*.219,.068,.022,handle,self)
@@ -206,9 +207,9 @@ func place_work_details() -> void:
 	var board_z: float = NORTH+.158
 	site.box(Vector3(-1.86,1.81,board_z),Vector3(.79,.61,.038),panel,self)
 	site.box(Vector3(-1.86,1.82,board_z+.024),Vector3(.68,.52,.019),white,self)
-	site.text_at("当班处理顺序",Vector3(-1.86,1.989,board_z+.038),46,.0014,"3c4d40",self)
-	site.text_at("脱标 · 清洗 · 消毒 · 沥干",Vector3(-1.86,1.849,board_z+.038),46,.00117,"3c4d40",self)
-	site.text_at("裂瓶放入碎玻璃桶",Vector3(-1.86,1.702,board_z+.038),46,.0010,"715f46",self)
+	site.text_at("手工脱标",Vector3(-1.86,1.989,board_z+.038),46,.0014,"3c4d40",self)
+	site.text_at("右键按住往下刮",Vector3(-1.86,1.849,board_z+.038),46,.00117,"3c4d40",self)
+	site.text_at("左键按住左右擦",Vector3(-1.86,1.702,board_z+.038),46,.00117,"3c4d40",self)
 	for x in [-2.14,-1.57]:
 		site.box(Vector3(x,2.066,board_z+.041),Vector3(.045,.022,.011),metal,self)
 	var copper: Material = site.material("6b5540",.57,.57)

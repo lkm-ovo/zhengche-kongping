@@ -73,12 +73,12 @@ static func radius_at(profile: Array, height: float) -> float:
 	return float(profile.back()[1])
 
 
-static func label_profile(profile: Array, bottom: float = .067, top: float = .148) -> Array:
-	var rows: Array = [[bottom,radius_at(profile,bottom)+.00135]]
+static func label_profile(profile: Array, bottom: float = .067, top: float = .148, clearance: float = .00135) -> Array:
+	var rows: Array = [[bottom,radius_at(profile,bottom)+clearance]]
 	for row in profile:
 		if row[0] > bottom and row[0] < top:
-			rows.append([row[0],row[1]+.00135])
-	rows.append([top,radius_at(profile,top)+.00135])
+			rows.append([row[0],row[1]+clearance])
+	rows.append([top,radius_at(profile,top)+clearance])
 	return rows
 
 

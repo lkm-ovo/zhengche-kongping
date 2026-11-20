@@ -8,7 +8,7 @@ const DESK = Vector3(Worksite.STRIP_X,.02,1.27)
 const START = Vector3(0,.02,2.72)
 const WALK_FOV = 68.0
 const DESK_FOV = 62.0
-const SCRAPE_FOV = 36.5
+const SCRAPE_FOV = 34.1
 
 var model := Yard.new()
 var site := Worksite.new()
@@ -33,6 +33,7 @@ var players: Array = []
 var sounds: int = 0
 var context: String = ""
 var hand_key: OmniLight3D
+var carried_box: Node3D
 var scene_loading: bool = false
 var journal_mouse_mode: Input.MouseMode = Input.MOUSE_MODE_CAPTURED
 
@@ -58,6 +59,7 @@ func _ready() -> void:
 	hand.checkpoint.connect(model.advance_held)
 	build_sound()
 	site.update_site(model,0.0)
+	site.update_cart(model,player,working)
 	get_tree().auto_accept_quit = false
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	refresh()
@@ -111,6 +113,8 @@ func make_player() -> void:
 	player.add_child(camera)
 	camera.add_child(hand)
 	hand.build(camera,site,site.font)
+	carried_box = site.finished_crate(Vector3(0,-.59,-.87),camera)
+	carried_box.hide()
 	hand_key = OmniLight3D.new()
 	hand_key.position = Vector3(.28,.31,-.49)
 	hand_key.omni_range = 1.3
@@ -128,7 +132,8 @@ func _physics_process(delta: float) -> void:
 	if not office and not ui.journal.visible and not scene_loading and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		direction.x = float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A))
 		direction.z = float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W))
-	var desired: Vector3 = Basis(Vector3.UP,yaw) * direction.normalized() * (5.8 if Input.is_physical_key_pressed(KEY_SHIFT) else 3.45)
+	var walk_speed: float = 2.65 if model.pushing_cart else (5.8 if Input.is_physical_key_pressed(KEY_SHIFT) else 3.45)
+	var desired: Vector3 = Basis(Vector3.UP,yaw) * direction.normalized() * walk_speed
 	player.velocity.x = move_toward(player.velocity.x,desired.x,delta*23.0)
 	player.velocity.z = move_toward(player.velocity.z,desired.z,delta*23.0)
 	player.velocity.y -= 18.0 * delta
@@ -148,8 +153,10 @@ func _process(delta: float) -> void:
 	model.advance(delta)
 	site.update_site(model,delta)
 	site.room.animate(delta,player.position)
+	site.update_cart(model,player,working)
 	focus_work_area(delta)
 	hand.pose(delta)
+	update_carried_crate(delta)
 	site.show_table_scraper(model.equipped_scraper,not (hand.held and hand.scraper.visible))
 	site.animate_wash_area(hand.rinse_flowing(),
 		hand.cycle_running and hand.task() == "sanitize",hand.progress,delta)
@@ -160,16 +167,28 @@ func _process(delta: float) -> void:
 		elapsed = 0.0
 		refresh()
 	var prompt: String = ""
-	if working:
-		prompt = "拿下一只空瓶" if model.can_take() else "来料已处理完 · E 查看成品销售"
-	elif not office:
+	if not working and not office:
 		context = target_under_aim()
+		var carrying: bool = model.carry_count() > 0
+		if carrying:
+			prompt = "已装 %d 只 · 前往脱标台" % model.carry_count()
+		if model.transport_crate_count() > 0:
+			prompt = "已装 %d 筐成品 · 滑门外右转是收购窗口" % model.transport_crate_count()
 		if context != "":
 			var options: Dictionary = {
-				"bench":"E   拿一只空瓶", "stock":"E   从来料筐取瓶",
-				"ship":"E   查看成品销售", "sale_shelf":"E   查看待售区与收购单", "office":"E   打开站务终端",
-				"room_door":"E   关上滑门" if site.room.door_open else "E   打开滑门",
+				"bench":"E   从储物中拿一只处理" if carrying else "先到右侧滑门外的车库取瓶",
+				"stock":"已装满 · 去脱标台处理" if model.carry_count() == model.carry_capacity() else (
+					("E   取一只空瓶" if model.carry_capacity() == 1 else "E   取瓶至满载") if model.can_take() else "来料区已空"),
+				"cart":"E   推小推车  ·  车上 %d 只散瓶 · %d 筐成品" % [model.parked_load.size(),model.cart_crates.size()],
+				"clean_crate":crate_prompt(),
+				"sale_window":"E   在收购窗口交货与结款", "office":"E   打开站务终端",
+				"room_door":"E   关上滑门" if site.room.door_open else "E   打开滑门 · 通往车库",
 			}
+			if context == "bench":
+				if not model.hand_crate.is_empty():
+					options.bench = "先把手里的成品筐送到收购窗口"
+				elif model.bench_crate.size() == model.crate_capacity():
+					options.bench = "成品筐已满 · 对准筐按 E 搬走"
 			prompt = options[context]
 	ui.update_work(hand,working,Input.mouse_mode == Input.MOUSE_MODE_CAPTURED,prompt,
 		status if status_ttl > 0.0 else "")
@@ -179,17 +198,49 @@ func _process(delta: float) -> void:
 		save()
 
 
+func update_carried_crate(delta: float) -> void:
+	var carrying: bool = not working and not model.hand_crate.is_empty()
+	carried_box.visible = carrying
+	if carrying:
+		carried_box.sync(model.hand_crate,model.crate_capacity())
+		var x: float = sin(camera_bob*.5)*.009
+		var y: float = -.553+sin(camera_bob)*.008
+		carried_box.position = Vector3(x,y,-.89)
+	hand.pose_carrying_crate(carried_box.position,carried_box.dimensions.x,carrying,delta)
+
+
+func crate_prompt() -> String:
+	var count: int = model.bench_crate.size()
+	var capacity: int = model.crate_capacity()
+	var prompt: String = "成品筐 %d / %d" % [count,capacity]
+	if count > 0:
+		if model.pushing_cart:
+			prompt += " · E 装上推车 %d / %d" % [model.cart_crates.size(),Yard.CART_CRATE_LIMIT]
+		else:
+			prompt += " · E 搬筐"
+	var next: int = model.crate_level+1
+	if next < Yard.CRATE_CAPACITIES.size():
+		if model.delivered == 0:
+			prompt += " · 首次出货后可升到 8 只"
+		elif model.phase < Yard.CRATE_PHASES[next]:
+			prompt += " · %s解锁 %d 只" % [Yard.AREA[Yard.CRATE_PHASES[next]],Yard.CRATE_CAPACITIES[next]]
+		else:
+			var cost: String = " ¥%d" % Yard.CRATE_COSTS[next] if Yard.CRATE_COSTS[next] > 0 else " 免费"
+			prompt += " · F 升到 %d 只%s" % [Yard.CRATE_CAPACITIES[next],cost]
+	return prompt
+
+
 func focus_work_area(delta: float) -> void:
 	var zoom_blend: float = 1.0-exp(-delta*10.0)
 	if not working or not hand.held:
 		camera.fov = lerpf(camera.fov,DESK_FOV if working else WALK_FOV,zoom_blend)
 		return
 	var action: String = hand.view_task()
-	var scraping: bool = action == hand.SCRAPE_LABEL
+	var close_up: bool = action == hand.SCRAPE_LABEL or (action == "scrub" and hand.glue_cleanup)
 	var station_x: float = site.STRIP_X
 	var eye: Vector3 = DESK+Vector3.UP*1.60
 	var look := Vector3(site.STRIP_X,1.17,.19)
-	if scraping:
+	if close_up:
 		eye = DESK+Vector3(0,1.55,-.16)
 		look = Vector3(site.STRIP_X,1.08,.42)
 	elif action in hand.RINSING:
@@ -217,7 +268,7 @@ func focus_work_area(delta: float) -> void:
 	camera.global_position = previous_eye.move_toward(eye,travel)
 	var aim: Basis = Transform3D(Basis.IDENTITY,eye).looking_at(look).basis
 	camera.quaternion = camera.quaternion.slerp(aim.get_rotation_quaternion(),weight)
-	camera.fov = lerpf(camera.fov,SCRAPE_FOV if scraping else DESK_FOV,zoom_blend)
+	camera.fov = lerpf(camera.fov,SCRAPE_FOV if close_up else DESK_FOV,zoom_blend)
 	if hand.cycle_running and action in ["sanitize","drain"]:
 		hand.bottle.global_transform = bottle_world
 	if hand.cursor.distance_to(current_hotspot) < 105.0:
@@ -230,12 +281,17 @@ func target_under_aim() -> String:
 	var choice: String = ""
 	for id in site.targets:
 		var entry: Dictionary = site.targets[id]
-		var offset: Vector3 = entry.position - camera.global_position
+		var point: Vector3 = entry.position
+		if id == "stock":
+			point = site.garage.pickup_point(player.position,camera.global_position,forward)
+			if not point.is_finite():
+				continue
+		var offset: Vector3 = point - camera.global_position
 		var distance: float = offset.dot(forward)
 		if distance < .20 or distance > entry.reach:
 			continue
-		var score: float = (offset - forward * distance).length() / entry.radius
-		if score < best and target_is_visible(entry.position):
+		var score: float = .15 if id == "stock" else (offset - forward * distance).length() / entry.radius
+		if score < best and target_is_visible(point):
 			best = score
 			choice = id
 	return choice
@@ -274,17 +330,34 @@ func _input(event: InputEvent) -> void:
 				if not office and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 					interact()
 					get_viewport().set_input_as_handled()
+			KEY_F:
+				if not office and not working and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and target_under_aim() == "clean_crate":
+					if model.upgrade_crate():
+						play_sound("snap")
+						tell("成品筐已升级 · 每筐 %d 只" % model.crate_capacity())
+						save()
+					elif model.crate_level+1 < Yard.CRATE_CAPACITIES.size() and model.delivered == 0:
+						tell("完成首次出货后可免费升到八只")
+					elif model.crate_level+1 < Yard.CRATE_CAPACITIES.size() and model.phase >= Yard.CRATE_PHASES[model.crate_level+1]:
+						tell("资金不足，先去收购窗口卖瓶")
+					get_viewport().set_input_as_handled()
 			KEY_R:
-				if working and not office and hand.held:
-					if hand.done or hand.quality == 2:
-						place_bottle()
+				if not office and model.carry_count() > 0:
+					if working:
+						leave_desk()
+					elif target_under_aim() == "stock":
+						tell("已把 %d 只放回车库来料区" % model.unload_carried())
 					else:
-						model.return_held()
-						hand.clear()
-						tell("已放回当前工序")
+						tell("到车库来料区按 R 放回瓶子")
+					get_viewport().set_input_as_handled()
+			KEY_C:
+				if not office and not working and model.pushing_cart:
+					park_cart()
+					get_viewport().set_input_as_handled()
 			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6:
-				if working and not office and not hand.held:
+				if not working and not office and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and target_under_aim() == "stock":
 					take_bottle(event.physical_keycode - KEY_1)
+					get_viewport().set_input_as_handled()
 	if office:
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
@@ -311,6 +384,8 @@ func work_gesture(button: MouseButton, down: bool) -> void:
 	if not down:
 		if work_button == button:
 			end_work_gesture()
+			if hand.scrape_between_passes and button == MOUSE_BUTTON_RIGHT:
+				hand.cursor = hand.hotspot()
 		return
 	if not hand.held:
 		return
@@ -330,28 +405,51 @@ func end_work_gesture() -> void:
 
 func interact() -> void:
 	if working:
-		if not hand.held:
-			if model.can_take():
-				take_bottle()
-			else:
-				show_office(true,true)
-		elif hand.done or hand.quality == 2:
+		if hand.done or hand.quality == 2:
 			place_bottle()
-		else:
-			tell("清洗、消毒并沥干后才能装筐")
 		return
 	match target_under_aim():
-		"bench","stock": approach_desk()
-		"ship","sale_shelf": show_office(true,true)
+		"stock": take_bottle()
+		"cart":
+			model.push_cart()
+			if not model.pushing_cart:
+				tell("车上已有三筐，先把手里的这筐送到收购窗口")
+				return
+			site.update_cart(model,player,working)
+			tell("开始推车 · 可装 %d 只散瓶和三筐成品 · C 停车" % Yard.CART_CAPACITY)
+		"clean_crate":
+			if model.take_crate():
+				play_sound("take")
+				tell("成品已装上车 %d / %d" % [model.cart_crates.size(),Yard.CART_CRATE_LIMIT] if model.pushing_cart else "已搬起成品筐 · 滑门外右转去收购窗口")
+				save()
+			elif model.bench_crate.is_empty():
+				tell("筐里还没有成品瓶")
+			else:
+				tell("推车已装满三筐" if model.pushing_cart else "先把手里的这筐送到收购窗口")
+		"bench":
+			if not model.carried.is_empty():
+				approach_desk()
+			else:
+				tell("从右侧滑门进车库取瓶")
+		"sale_window": show_office(true,true)
 		"office": show_office(true)
 		"room_door":
 			if site.room.toggle(player.position):
+				status_ttl = 0.0
 				play_sound("snap")
 			else:
 				tell("离开门口再关滑门")
 
 
 func approach_desk() -> void:
+	if not model.hand_crate.is_empty():
+		tell("先把手里的成品筐送到收购窗口")
+		return
+	if not model.carried.is_empty() and model.bench_crate.size() == model.crate_capacity() and model.grade(model.carried.front().x) != 2:
+		tell("成品筐已满 · 对准筐按 E 搬走，再处理下一只")
+		return
+	if not model.begin_carried():
+		return
 	working = true
 	player.velocity = Vector3.ZERO
 	player.position = DESK
@@ -360,53 +458,82 @@ func approach_desk() -> void:
 	player.rotation = Vector3.ZERO
 	camera.rotation = Vector3(pitch,0,0)
 	camera.position = Vector3(0,1.60,0)
-	take_bottle()
+	status_ttl = 0.0
+	hand.wrist = Vector3(.21,-.34,-.49)
+	hand.load_bottle(model.held,model.held_queue,model.equipped_scraper)
 
 
 func take_bottle(selected: int = -1) -> void:
-	var taken: Vector2i = model.take(selected)
-	if taken.x < 0:
-		tell("来料筐暂时空了" if selected < 0 else "来料筐里暂时没有" + Yard.NAMES[selected])
+	if model.carry_count() >= model.carry_capacity():
+		tell("已装满，前往脱标台处理")
 		return
-	end_work_gesture()
-	hand.wrist = Vector3(.21,-.34,-.49)
-	hand.load_bottle(taken.x,taken.y,model.equipped_scraper)
+	var taken: int = model.collect(selected)
+	if taken == 0:
+		tell("来料区暂时空了" if selected < 0 else "来料区暂时没有" + Yard.NAMES[selected])
+		return
+	status_ttl = 0.0
 	play_sound("take")
+	refresh()
+
+
+func park_cart() -> void:
+	model.park_cart(site.cart.position,site.cart.rotation.y)
+	site.update_cart(model,player,working)
+	tell("已停车 · 车上保留 %d 只散瓶和 %d 筐成品" % [model.parked_load.size(),model.cart_crates.size()])
 
 
 func place_bottle() -> void:
 	var discard: bool = hand.quality == 2
 	if not model.set_down():
+		tell("成品筐已满")
 		return
-	var bottle: Node3D = hand.bottle.duplicate(0)
-	site.add_child(bottle)
-	bottle.global_transform = hand.bottle.global_transform
-	var start: Vector3 = bottle.position
-	var destination: Vector3 = site.CLEAN_CRATE+Vector3.UP*.043 if not discard else site.SCRAP_BIN+Vector3(0,.24,.115)
-	var tween := create_tween()
-	tween.tween_method(func(t: float) -> void:
-		bottle.position = start.lerp(destination,t) + Vector3.UP * sin(t*PI)*.07
-		bottle.rotation.z = sin(t*PI)*.23,0.0,1.0,.34)
-	tween.tween_callback(func() -> void:
-		play_sound("scrap" if discard else "glass")
-		bottle.queue_free())
-	hand.clear()
-	tell("已放入成品筐" if not discard else "裂瓶已投入碎玻璃桶")
+	if discard:
+		var bottle: Node3D = hand.bottle.duplicate(0)
+		site.add_child(bottle)
+		bottle.global_transform = hand.bottle.global_transform
+		var start: Vector3 = bottle.position
+		var destination: Vector3 = site.SCRAP_BIN+Vector3(0,.24,.115)
+		var tween := create_tween()
+		tween.tween_method(func(t: float) -> void:
+			bottle.position = start.lerp(destination,t) + Vector3.UP * sin(t*PI)*.07
+			bottle.rotation.z = sin(t*PI)*.23,0.0,1.0,.34)
+		tween.tween_callback(func() -> void:
+			play_sound("scrap")
+			bottle.queue_free())
+	else:
+		site.clean_box.sync(model.bench_crate,model.crate_capacity())
+		play_sound("glass")
+	end_desk()
+	var result: String = "裂瓶已投入碎玻璃桶" if discard else "已放入成品筐 %d / %d" % [model.bench_crate.size(),model.crate_capacity()]
+	var next: String = "对准成品筐按 E 搬去收购窗口"
+	if model.bench_crate.size() == model.crate_capacity():
+		next = "筐满了 · 对准筐按 E 搬走"
+	elif model.carry_count() > 0:
+		next = "回脱标台处理下一只"
+	elif model.can_take():
+		next = "回车库取下一批"
+	tell(result + " · " + next)
 
 
 func leave_desk() -> void:
-	end_work_gesture()
 	if hand.held and (hand.done or hand.quality == 2):
 		place_bottle()
-	else:
-		model.return_held()
+		return
+	if model.held >= 0:
+		model.stow_held()
+		end_desk()
+		tell("已收回储物空间，工序进度保留")
+
+
+func end_desk() -> void:
+	end_work_gesture()
 	hand.clear()
+	if not working:
+		return
 	working = false
 	pitch = -.17
-	camera.rotation.x = pitch
-	camera.rotation.y = 0.0
+	camera.rotation = Vector3(pitch,0,0)
 	camera.position = Vector3(0,1.60,0)
-	refresh()
 
 
 func show_office(open: bool, sales: bool = false) -> void:
@@ -449,7 +576,6 @@ func on_action(id: String, value: int) -> void:
 			read_journal(value)
 			return
 		"close": show_office(false)
-		"open_sales": show_office(true,true)
 		"open_operations": show_office(true)
 		"open_tools":
 			show_office(true)
@@ -478,23 +604,43 @@ func on_action(id: String, value: int) -> void:
 		"inspect":
 			tell("已沥干验瓶 %s 只" % ui.comma(model.bulk_finish()))
 		"pack_for_sale":
+			if not ui.market.is_visible_in_tree():
+				return
 			var packed: int = model.stage_for_sale()
 			if packed > 0:
 				play_sound("glass")
 				ui.select_available_buyer(model)
-				tell("已送入待售区 %s 只，选择收购单完成出售。" % ui.comma(packed))
+				tell("已交接批量成品 %s 只，请选择收购单。" % ui.comma(packed))
+		"unload_finished":
+			if not ui.market.is_visible_in_tree():
+				return
+			var unloaded: int = model.unload_finished()
+			if unloaded > 0:
+				play_sound("glass")
+				ui.select_available_buyer(model)
+				tell("窗口已收下 %s 只，确认出售后结款。" % ui.comma(unloaded))
 		"select_buyer":
 			ui.selected_buyer = value
 			refresh()
 			return
 		"confirm_sale":
+			if not ui.market.is_visible_in_tree():
+				return
 			var buyer: int = ui.selected_buyer
 			var sale: Vector2i = model.sell_to(buyer)
 			if sale.x > 0:
 				play_sound("sale")
 				ui.select_available_buyer(model)
-				tell("已售给%s %s 只 · 到账 ¥ %s" % [Yard.BUYERS[buyer],ui.comma(sale.x),ui.comma(sale.y)])
+				tell("已售给%s %s 只 · 到账 ¥ %s" % [Yard.BUYERS[buyer],ui.comma(sale.x),ui.format_cash(sale.y)])
+		"wait_market":
+			if not ui.market.is_visible_in_tree() or not model.market_wait_available():
+				return
+			model.turn_market_day()
+			ui.select_available_buyer(model)
+			tell("进入收购第 %d 天，报价和额度已更新" % model.market_day)
 		"auto_sales":
+			if not ui.market.is_visible_in_tree():
+				return
 			model.enable_auto_sales(not model.auto_sales)
 			tell("已开启自动接单、出货和结款" if model.auto_sales else "自动销售已关闭")
 		"priority":

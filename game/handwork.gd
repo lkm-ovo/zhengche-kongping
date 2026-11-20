@@ -11,15 +11,18 @@ const SkinMaterial = preload("res://skin.gdshader")
 const Shapes = preload("res://workshop_shapes.gd")
 const WorkerHand = preload("res://worker_hand.gd")
 const POSITION = Vector3(-.039, -.210, -.63)
-const SCRAPE_LIFT = Vector3(.021,.096,0)
+const SCRAPE_LIFT = Vector3(.021,.101,0)
 const PINCH_CONTACT = Vector3(-.024,.054,-.030)
 const SCRAPE_LABEL = "scrape_label"
 const SCRAPE_RELEASE_TIME = .20
 const SCRAPE_RESET_TIME = .16
 const SCRAPE_SPEED = 95.0
-const SCRAPE_TARGET_RADIUS = 58.0
-const LABEL_START = -.98
-const LABEL_ARC = 2.18
+const SCRAPE_TARGET_RADIUS = 76.0
+const LABEL_START = -1.13
+const LABEL_ARC = 2.48
+const LABEL_BOTTOM = .052
+const LABEL_TOP = .166
+const LABEL_CLEARANCE = .0025
 const SCRAPER_MOUNT := Transform3D(Basis(Vector3.BACK,.78),Vector3(-.015,.049,-.042))
 # Four finger rows hold MCP, PIP, DIP flexion and splay. Thumb rows hold individual pitch and splay.
 const BRACE_FINGERS = [
@@ -29,6 +32,11 @@ const BRACE_FINGERS = [
 const BRACE_THUMBS = [
 	[Vector2(14,51),Vector2(42,63),Vector2(71,55)],
 	[Vector2(20,40),Vector2(36,50),Vector2(68,62)],
+]
+const RINSE_BRACE_PROFILE = [0,1,0,1,0,0]
+const RINSE_GRIP_MOUNTS = [
+	Vector3(-.064,.060,-.042),Vector3(-.064,.063,-.0415),Vector3(-.0747,.061,-.0527),
+	Vector3(-.0597,.061,-.0358),Vector3(-.0618,.0605,-.0385),Vector3(-.0628,.0605,-.0403),
 ]
 const SCRAPER_FINGERS = [Vector4(13,45,36,32),Vector4(20,66,43,27),Vector4(32,66,43,28),Vector4(56,53,21,18)]
 const SCRAPER_THUMB = [Vector2(10,-16),Vector2(11,3),Vector2(0,3)]
@@ -65,7 +73,6 @@ var bottle: Node3D
 var label_mesh: MeshInstance3D
 var label_print: Label3D
 var label_material: ShaderMaterial
-var residue: Node3D
 var cap: Node3D
 var marble: MeshInstance3D
 var tool: Node3D
@@ -78,7 +85,6 @@ var wet_glass: ShaderMaterial
 var arms: Array = []
 var glass_mats: Array = []
 var labels: Array = []
-var body_meshes: Array = []
 var reel: SphereMesh
 var code: int = -1
 var type: int = 0
@@ -119,10 +125,11 @@ var scrape_reset: float = 0.0
 var scraper_level: int = 0
 var scrape_pass: int = 0
 var scrape_passes: int = 2
-var scrape_drag_length: float = 119.0
+var scrape_drag_length: float = 0.0
 var scrape_between_passes: bool = false
 var glue_cleanup: bool = false
 var surface_wiped: bool = false
+var bottle_sequence: int = 0
 var emitted_flakes: int = 0
 var lift_from_bench: float = 1.0
 var valve_time: float = 0.0
@@ -152,6 +159,7 @@ func build(origin: Camera3D, drawing, glyphs: Font) -> void:
 		var mat := ShaderMaterial.new()
 		mat.shader = GlassMaterial
 		mat.set_shader_parameter("glass", Color(Yard.GLASS[i]))
+		mat.set_shader_parameter("adhesive_area",Vector4(LABEL_START,LABEL_ARC,LABEL_BOTTOM,LABEL_TOP))
 		glass_mats.append(mat)
 		var wrap := ShaderMaterial.new()
 		wrap.shader = PaperMaterial
@@ -159,7 +167,6 @@ func build(origin: Camera3D, drawing, glyphs: Font) -> void:
 		wrap.set_shader_parameter("ink",Color(["536041","8c3f1b","48685c","644324","356c64","645c37"][i]))
 		wrap.set_shader_parameter("sleeve",i == 1)
 		labels.append(wrap)
-		body_meshes.append(Shapes.lathe(PROFILES[i],56))
 	bottle = Node3D.new()
 	bottle.position = POSITION
 	add_child(bottle)
@@ -196,7 +203,7 @@ func build(origin: Camera3D, drawing, glyphs: Font) -> void:
 	runoff = water.duplicate()
 	for i in 9:
 		water_drops.append(sphere(Vector3.ZERO,Vector3(.0016,.003,.0016),runoff,self))
-	visible = false
+	clear()
 
 
 func sphere(at: Vector3, dimensions: Vector3, mat: Material, parent: Node3D) -> MeshInstance3D:
@@ -260,63 +267,38 @@ func load_bottle(item: int, from_queue: int, selected_scraper: int = 0) -> void:
 	gasket_ring = null
 	var glass: ShaderMaterial = glass_mats[type].duplicate()
 	wet_glass = glass
+	bottle_sequence += 1
 	glass.set_shader_parameter("scuff",.73 if quality > 0 else .34)
 	glass.set_shader_parameter("wetness",wetness)
-	source.mesh_at(body_meshes[type],Vector3.ZERO,glass,bottle)
-	var rim: Array = PROFILES[type].back()
-	var top: float = rim[0]
-	var lip: float = rim[1]
-	var neck: Material = source.material(Yard.GLASS[type],.17,.13)
-	var opening: Material = source.material("22281b",.47,.05)
-	source.mesh_at(Shapes.lathe([[top-.034,lip*.71],[top-.009,lip*.71],[top-.002,lip*.79],[top,lip]],42),Vector3.ZERO,neck,bottle)
-	source.cylinder(Vector3(0,top-.034,0),lip*.71,.0035,opening,bottle)
-	source.cylinder(Vector3(0,.005,0),float(PROFILES[type][0][1])*.93,.008,glass,bottle)
+	glass.set_shader_parameter("stain_seed",float((bottle_sequence*17+item*7)%97)*.19)
+	glass.set_shader_parameter("adhesive_strength",.84 if glue_cleanup else 0.0)
+	glass.set_shader_parameter("grime_strength",.70 if quality == 1 else (.26 if not has_paper else 0.0))
+	source.build_bottle_body(type,glass,bottle)
 	label_material = labels[type].duplicate() as ShaderMaterial
 	label_material.set_shader_parameter("scrape_passes",scrape_passes)
+	label_material.set_shader_parameter("label_band",Vector2(LABEL_BOTTOM,LABEL_TOP))
+	label_material.set_shader_parameter("adhesion_threshold",.51 if scraper_level == 0 else .62)
 	var rows: Array = label_rows()
 	label_mesh = source.mesh_at(Shapes.lathe(rows,36,LABEL_START,LABEL_ARC),Vector3.ZERO,label_material,bottle)
-	label_print = source.text_at(Yard.MARKS[type],Vector3(0,.114,wrap_radius(.114)+.001),42,.0006,"494331",bottle)
+	# The thin wrap sits against the glass and does not need its own shadow caster.
+	label_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var print_radius: float = Shapes.radius_at(PROFILES[type],.114)+LABEL_CLEARANCE+.001
+	label_print = source.text_at(Yard.MARKS[type],Vector3(0,.114,print_radius),42,.0006,"494331",bottle)
 	label_print.modulate.a = .9
-	residue = Node3D.new()
-	bottle.add_child(residue)
-	if glue_cleanup:
-		build_adhesive_smears()
-	else:
-		for j in (11 if quality == 1 else 6):
-			var angle: float = j*2.39
-			var height: float = .060+fposmod(j*.031,.113)
-			var radius: float = float(rows[0][1])-.004
-			var fleck := sphere(Vector3(sin(angle)*radius,height,cos(angle)*radius),Vector3(.005,.014,.003),source.material("9e8765",.88),residue)
-			fleck.rotation.y = angle
 	if quality == 2:
 		paint_crack(float(rows[0][1]))
 	if type == 4:
-		marble = sphere(Vector3(0,.214,.025),Vector3.ONE*.014,source.material("c3ceae", .15, .3),bottle)
-		for z in [-.023,.023]:
-			sphere(Vector3(0,.208,z),Vector3(.036,.006,.005),glass_mats[type],bottle)
+		marble = source.build_bottle_marble(bottle,glass_mats[type])
 	cap = Node3D.new()
 	bottle.add_child(cap)
 	if type == 5:
-		build_closure(float(rim[0]), cap)
+		gasket_ring = source.build_bottle_closure(cap,bottle,dirty_ring)
 	held = true
+	bottle.show()
 	show()
 	update_art()
 	cursor = hotspot()
 	changed.emit()
-
-
-func build_adhesive_smears() -> void:
-	var amber := StandardMaterial3D.new()
-	amber.albedo_color = Color(.72,.64,.42,.80)
-	amber.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	amber.roughness = .96
-	for i in 19:
-		var angle: float = -.81+fposmod(i*.74,1.93)
-		var height: float = .074+fposmod(i*.019,.062)
-		var size := Vector2(.008+fposmod(i*.003,.010),.012+fposmod(i*.007,.013))
-		var smear: MeshInstance3D = source.mesh_at(Shapes.paper_chip(size),bottle_surface(type,angle,height,.0023),amber,residue)
-		smear.rotation = Vector3(0,angle,sin(i*1.91)*.52)
-		smear.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 
 func set_work_steps(from_queue: int) -> void:
@@ -337,7 +319,7 @@ func set_work_steps(from_queue: int) -> void:
 
 
 func label_rows() -> Array:
-	return Shapes.label_profile(PROFILES[type])
+	return Shapes.label_profile(PROFILES[type],LABEL_BOTTOM,LABEL_TOP,LABEL_CLEARANCE)
 
 
 func wrap_radius(height: float) -> float:
@@ -354,19 +336,6 @@ func paint_crack(radius: float) -> void:
 	for i in range(1,points.size()):
 		var part := sphere(Vector3.ZERO,Vector3.ONE,mark,bottle)
 		span(part, points[i-1], points[i], .0012)
-
-
-func build_closure(top: float, root: Node3D) -> void:
-	root.position = Vector3(0,top,-.017)
-	source.cylinder(Vector3(0,.012,.017),.030,.015,source.material("d0c5a9",.38),root)
-	gasket_ring = source.cylinder(Vector3(0,.003,.017),.023,.007,dirty_ring,root)
-	var wire: Material = source.material("a8b2aa",.26,.7)
-	for x in [-.026,.026]:
-		var wire_arm := sphere(Vector3.ZERO,Vector3.ONE,wire,root)
-		span(wire_arm,Vector3(x,.009,.01),Vector3(x,-.047,.032),.0025)
-		var embed := sphere(Vector3(x,-.041,.033), Vector3(.007,.006,.004),wire,bottle)
-		embed.position.y += top
-	source.box(Vector3(0,-.038,.046),Vector3(.049,.013,.009),wire,root)
 
 
 func task() -> String:
@@ -423,7 +392,7 @@ func scrape_angle(amount: float) -> float:
 
 
 func scrape_point(amount: float, clearance: float = .0024) -> Vector3:
-	return bottle.transform*bottle_surface(type,scrape_angle(amount),lerpf(.148,.068,amount),clearance)
+	return bottle.transform*bottle_surface(type,scrape_angle(amount),lerpf(LABEL_TOP,LABEL_BOTTOM,amount),clearance)
 
 
 func scraper_basis() -> Basis:
@@ -592,6 +561,8 @@ func pose(delta: float) -> void:
 	scrape_reset = maxf(0.0,scrape_reset-delta)
 	var action: String = view_task()
 	var scraping: bool = action == SCRAPE_LABEL
+	var rinsing: bool = action in RINSING
+	var previous_bottle_basis: Basis = bottle_grip_basis() if rinsing else Basis.IDENTITY
 	var on_glass: bool = scraping and (pressed or scrape_release > .055 or scrape_reset > .076)
 	scrape_pressure = move_toward(scrape_pressure,1.0 if on_glass else 0.0,delta*10.0)
 	if scraping:
@@ -605,9 +576,9 @@ func pose(delta: float) -> void:
 	var goal: Vector3 = POSITION+Vector3(0,bob,0)+Vector3(-.061,-.117,.05)*remaining_lift
 	goal += Vector3(.001,-.004,-.004)*tension
 	var turn := Basis.from_euler(Vector3(.03-.026*tension,rotation_goal,-.08-.048*tension))
-	if scraping:
+	if scraping or (action == "scrub" and glue_cleanup):
 		goal += SCRAPE_LIFT
-	elif action in RINSING:
+	elif rinsing:
 		var roll: float = -lean_goal*.83 if action == "rinse_bead" else -.10
 		var world_pose := Basis.from_euler(Vector3(.03,rotation_goal,roll))
 		turn = global_basis.inverse()*world_pose
@@ -639,7 +610,7 @@ func pose(delta: float) -> void:
 	var right_rotation := Vector3(.34,.46,1.03 + reach.x)
 	if scraping:
 		is_near = not rotating
-	elif action in RINSING:
+	elif rinsing:
 		opening_valve = pressed and valve_time < .27
 		is_near = opening_valve
 		idle = RIGHT_RINSE_REST
@@ -683,16 +654,23 @@ func pose(delta: float) -> void:
 	var body_radius: float = Shapes.radius_at(PROFILES[type],.064)
 	var left_goal := Transform3D(Basis.from_euler(Vector3(-.21,-.72,-.93+bottle.rotation.z*.42)),
 		bottle.position+Vector3(-.063-(body_radius-.045)*.80,.035,.029))
-	if action in RINSING:
-		left_goal.origin = bottle.transform*Vector3(-.044-(body_radius-.045)*.80,.134,.043)
-	var bracing: bool = scraping
 	var left_target := Transform3D(left_goal.basis,left_goal.origin-bottle.position)
-	if bracing:
-		left_target = Transform3D(bottle_grip_basis(),Vector3.ZERO)*bottle_brace
-	left_grip = left_grip.interpolate_with(left_target,blend) if left_grip_placed and not bracing else left_target
+	var left_finger_pose: String = "hold"
+	if scraping or rinsing:
+		var profile: int = RINSE_BRACE_PROFILE[type] if rinsing else type
+		var mount: Transform3D = bottle_brace
+		var grip_basis: Basis = bottle_grip_basis()
+		if rinsing:
+			mount.origin = RINSE_GRIP_MOUNTS[type]
+			if left_grip_placed:
+				# Carry the current grip with the bottle before blending in the new pose.
+				left_grip = Transform3D(grip_basis*previous_bottle_basis.inverse(),Vector3.ZERO)*left_grip
+		left_target = Transform3D(grip_basis,Vector3.ZERO)*mount
+		left_finger_pose = "brace%d" % profile
+	left_grip = left_grip.interpolate_with(left_target,blend) if left_grip_placed and not scraping else left_target
 	left_grip_placed = true
 	arms[0].transform = Transform3D(left_grip.basis,bottle.position+left_grip.origin)
-	arms[0].animate_fingers("brace%d" % type if bracing else "hold",delta)
+	arms[0].animate_fingers(left_finger_pose,delta)
 	var deposited: bool = cycle_running and progress > .16
 	var up: Vector3 = global_basis.inverse()*Vector3.UP
 	var forward: Vector3 = Vector3.FORWARD.slide(up).normalized()
@@ -784,11 +762,8 @@ func update_art() -> void:
 	label_print.visible = label_mesh.visible and lettering_cut < .52
 	label_print.modulate.a = .90*(1.0-smoothstep(.32,.52,lettering_cut))
 	var action: String = task()
-	residue.visible = not washed and not surface_wiped and (not has_paper or quality == 1 or (glue_cleanup and label_removed))
-	if residue.visible and action == "scrub":
-		var remaining: int = ceili(residue.get_child_count()*(1.0-progress))
-		for i in residue.get_child_count():
-			residue.get_child(i).visible = i < remaining
+	var wipe: float = 1.0 if washed or surface_wiped else (progress if action == "scrub" else 0.0)
+	wet_glass.set_shader_parameter("wipe_coverage",wipe)
 	if is_instance_valid(marble):
 		marble.position.x = -lean_goal * .027
 	if type == 5:
@@ -804,3 +779,26 @@ func clear() -> void:
 	rotating = false
 	cycle_running = false
 	visible = false
+	bottle.hide()
+	tool.hide()
+	scraper.hide()
+	towel.hide()
+	stream.hide()
+	for drop in water_drops:
+		drop.hide()
+
+
+func pose_carrying_crate(crate_position: Vector3, width: float, carrying: bool, delta: float) -> void:
+	if held:
+		return
+	visible = carrying
+	if not carrying:
+		return
+	for i in arms.size():
+		var side: float = -1.0 if i == 0 else 1.0
+		var arm: Node3D = arms[i]
+		arm.show()
+		arm.rotation = Vector3(-.83,side*.78,-side*.86)
+		arm.position = crate_position+Vector3(side*(width*.5+.030),.080,.107)
+		arm.animate_fingers("hold" if i == 0 else "rest",delta)
+		arm.pose_arm(Vector3(side*.175,-.239,.092),Vector3(side*.36,-.55,.03))

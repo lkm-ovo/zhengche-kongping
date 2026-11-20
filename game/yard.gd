@@ -2,9 +2,12 @@ extends RefCounted
 
 const NAMES = ["绿啤酒瓶", "橙味汽水瓶", "胖肚牛奶瓶", "细颈酱汁瓶", "弹珠汽水瓶", "翻盖玻璃瓶"]
 const CONDITION = ["轻污", "重污", "裂瓶"]
-const PRICES = [1, 2, 2, 3, 3, 4]
+const BASE_PRICES = [100, 200, 200, 300, 300, 400] # Cents per bottle.
 const BUYERS = ["滨河啤酒厂", "南街汽水铺", "晨乳配送站", "老巷酱料厂", "海风汽水厂", "山泉灌装厂"]
-const ORDER_LIMIT = [72, 300, 1200, 12000, 48000]
+const MARKET_DAY_SECONDS = 120.0
+const DAILY_DEMAND = [180, 1200, 5000, 75000, 720000]
+const BUYER_DEMAND_PERCENT = [120, 110, 90, 80, 70, 60]
+const DEMAND_SWING = [0, 8, -5, 11, -8, 4, -3]
 const GLASS = ["446b39", "74aeb2", "a0bec1", "764c2e", "4c9d83", "737847"]
 const LABEL = ["ddcb9c", "eb853a", "dbebe7", "e4b26e", "abe0ce", "d1bd8d"]
 const MARKS = ["麦 岸", "橙 泡", "晨 乳", "酿 造", "苏 打", "山 泉"]
@@ -20,8 +23,8 @@ const AREA = ["街边回收点", "街区回收点", "小仓库", "城区回收�
 const EQUIPMENT = ["台式脱标机", "循环洗瓶机", "光学分拣机", "沥干验瓶台", "装箱发货机", "专用清洗工位", "托盘及调度系统", "蒸汽消毒机"]
 const COST = [72, 240, 440, 580, 720, 1300, 4300, 380]
 const SCRAPERS = [
-	{"name":"旧平口刮刀", "price":0, "passes":[2,3], "drag":[119.0,126.0], "glue":[true,true],
-		"cue":"scrape_dull", "rattle":.0015, "pieces":5, "shaving":Vector2(.86,.82)},
+	{"name":"旧平口刮刀", "price":0, "passes":[2,3], "drag":[158.0,169.0], "glue":[true,true],
+		"cue":"scrape_dull", "rattle":.0023, "pieces":5, "shaving":Vector2(.86,.82)},
 	{"name":"薄刃钢刮刀", "price":24, "passes":[1,2], "drag":[139.0,104.0], "glue":[false,true],
 		"cue":"scrape_steel", "rattle":.00065, "pieces":4, "shaving":Vector2(.87,1.68)},
 	{"name":"弧面刮刀", "price":58, "passes":[1,1], "drag":[101.0,116.0], "glue":[false,false],
@@ -39,7 +42,7 @@ const LEGACY_TRUCK_SIZE = 19200
 const DAY_TRUCKS = 60
 const TRUCK_MIX = [24,20,12,10,8,6]
 const TRUCK_MIX_TOTAL = 80
-const QUEUE_NAMES = ["来料", "待脱标", "待清洗", "待消毒", "待沥干验瓶", "成品筐", "待售区"]
+const QUEUE_NAMES = ["来料", "待脱标", "待清洗", "待消毒", "待沥干验瓶", "成品库存", "窗口待售"]
 const RAW = 0
 const SORTED = 1
 const STRIPPED = 2
@@ -54,12 +57,23 @@ const BATCH_SIZE = [STARTER_SIZE, 200, 600, 2400, 4800]
 const PHASE_MULTIPLIERS = [1, 4, 12, 40, 425]
 const STORY_TARGET = 12000
 const STORY_TRUCK_PHASE = 3
+const BAG_CAPACITY = 5
+const CART_CAPACITY = 20
+const CRATE_CAPACITIES = [4, 8, 12, 16]
+const CRATE_COSTS = [0, 0, 65, 140]
+const CRATE_PHASES = [0, 0, 1, 2]
+const CART_CRATE_LIMIT = 3
 enum Story { OPENING, FIRST_SALE, FIRST_MACHINE, FIRST_TRUCK, RECOVERED }
 
 var queues: Array = []
 var installed: Array = [false, false, false, false, false, false, false, false]
 var sold_by_type: Array = [0, 0, 0, 0, 0, 0]
 var credits: int = 0
+var credit_cents: int = 0
+var market_day: int = 1
+var market_elapsed: float = 0.0
+var bought_today: Array[int] = [0, 0, 0, 0, 0, 0]
+var bought_yesterday: Array[int] = [0, 0, 0, 0, 0, 0]
 var story_read: int = -1
 var story_recovered: bool = false
 var owned_scraper: int = 0
@@ -71,6 +85,15 @@ var phase: int = 0
 var priority: int = -1
 var held: int = -1
 var held_queue: int = RAW
+var carried: Array[Vector2i] = []
+var pushing_cart: bool = false
+var parked_load: Array[Vector2i] = []
+var crate_level: int = 0
+var bench_crate: Array[int] = []
+var hand_crate: Array[int] = []
+var cart_crates: Array[Array] = []
+var parked_at := Vector3.INF
+var parked_angle: float = 0.0
 var trucks: int = 0
 var day_active: bool = false
 var day_complete: bool = false
@@ -145,6 +168,8 @@ func can_take() -> bool:
 
 
 func can_bulk_wash() -> bool:
+	if not installed[0]:
+		return false
 	for item in range(3 * CONDITION.size()):
 		if queues[STRIPPED][item] > 0:
 			return true
@@ -155,19 +180,85 @@ func in_yard() -> int:
 	return received - delivered - recycled
 
 
-func take(selected: int = -1) -> Vector2i:
-	if held >= 0:
-		return Vector2i(held, held_queue)
+func cart_unlocked() -> bool:
+	return phase >= STORY_TRUCK_PHASE
+
+
+func carry_capacity() -> int:
+	if pushing_cart:
+		return CART_CAPACITY
+	return BAG_CAPACITY if phase >= 1 else 1
+
+
+func carry_count() -> int:
+	return carried.size()+int(held >= 0)
+
+
+func push_cart() -> void:
+	if not cart_unlocked() or pushing_cart:
+		return
+	if not hand_crate.is_empty():
+		if cart_crates.size() == CART_CRATE_LIMIT:
+			return
+		cart_crates.append(hand_crate.duplicate())
+		hand_crate.clear()
+	carried.append_array(parked_load)
+	parked_load.clear()
+	pushing_cart = true
+
+
+func park_cart(at: Vector3, angle: float) -> void:
+	while carried.size() > BAG_CAPACITY:
+		parked_load.push_front(carried.pop_back())
+	parked_at = at
+	parked_angle = angle
+	pushing_cart = false
+
+
+func collect(selected: int = -1) -> int:
+	var before: int = carried.size()
+	var order: Array = item_order(selected)
+	for _space in range(carry_capacity()-carry_count()):
+		var item: Vector2i = take_from_stock(order,selected)
+		if item.x < 0:
+			break
+		carried.append(item)
+	return carried.size()-before
+
+
+func take_from_stock(order: Array, selected: int) -> Vector2i:
 	for queue in BENCH_QUEUES:
-		for item in item_order(selected):
+		for item in order:
 			if selected >= 0 and kind(item) != selected:
 				continue
 			if queues[queue][item] > 0:
 				queues[queue][item] -= 1
-				held = item
-				held_queue = queue
 				return Vector2i(item, queue)
 	return Vector2i(-1, RAW)
+
+
+func begin_carried() -> bool:
+	if held >= 0 or carried.is_empty():
+		return false
+	var item: Vector2i = carried.pop_front()
+	held = item.x
+	held_queue = item.y
+	return true
+
+
+func stow_held() -> void:
+	if held >= 0:
+		carried.push_front(Vector2i(held,held_queue))
+		held = -1
+		held_queue = RAW
+
+
+func unload_carried() -> int:
+	var count: int = carried.size()
+	for item in carried:
+		queues[item.y][item.x] += 1
+	carried.clear()
+	return count
 
 
 func return_held() -> void:
@@ -187,13 +278,83 @@ func set_down() -> bool:
 		return false
 	if grade(held) == 2:
 		recycled += 1
-	elif held_queue == CLEAN:
-		queues[CLEAN][held] += 1
+	elif held_queue == CLEAN and bench_crate.size() < crate_capacity():
+		bench_crate.append(held)
 	else:
 		return false
 	held = -1
 	held_queue = RAW
 	return true
+
+
+func crate_capacity() -> int:
+	return CRATE_CAPACITIES[crate_level]
+
+
+func upgrade_crate() -> bool:
+	var next: int = crate_level + 1
+	if next >= CRATE_CAPACITIES.size() or delivered == 0 or phase < CRATE_PHASES[next] or credits < CRATE_COSTS[next]:
+		return false
+	credits -= CRATE_COSTS[next]
+	crate_level = next
+	refill_legacy_crate()
+	return true
+
+
+func take_crate() -> bool:
+	if held >= 0 or bench_crate.is_empty():
+		return false
+	if pushing_cart:
+		if cart_crates.size() == CART_CRATE_LIMIT:
+			return false
+		cart_crates.append(bench_crate.duplicate())
+	else:
+		if not hand_crate.is_empty():
+			return false
+		hand_crate.assign(bench_crate)
+	bench_crate.clear()
+	refill_legacy_crate()
+	return true
+
+
+func refill_legacy_crate() -> void:
+	# Old manual saves kept finished bottles in the bulk queue.
+	if installed[0] or installed[PACKER]:
+		return
+	for item in item_order():
+		if grade(item) == 2:
+			continue
+		var count: int = mini(crate_capacity() - bench_crate.size(), queues[CLEAN][item])
+		for i in count:
+			bench_crate.append(item)
+		queues[CLEAN][item] -= count
+		if bench_crate.size() == crate_capacity():
+			break
+
+
+func transport_crate_count() -> int:
+	return cart_crates.size() if pushing_cart else int(not hand_crate.is_empty())
+
+
+func transport_finished_count() -> int:
+	var total: int = hand_crate.size()
+	if pushing_cart:
+		for cargo in cart_crates:
+			total += cargo.size()
+	return total
+
+
+func unload_finished() -> int:
+	var count: int = transport_finished_count()
+	for item in hand_crate:
+		queues[FOR_SALE][item] += 1
+	hand_crate.clear()
+	if pushing_cart:
+		for cargo in cart_crates:
+			for item in cargo:
+				queues[FOR_SALE][item] += 1
+		cart_crates.clear()
+	return count
 
 
 func item_order(preferred: int = -2) -> Array:
@@ -213,19 +374,19 @@ func bulk_feed() -> int:
 
 
 func bulk_wash() -> int:
-	return run_machine(1,STRIPPED,WASHED,BATCH_SIZE[phase],1,false)
+	return run_machine(1,STRIPPED,WASHED,BATCH_SIZE[phase],1,false) if installed[0] else 0
 
 
 func bulk_sanitize() -> int:
-	return run_machine(SANITIZER,WASHED,SANITIZED,BATCH_SIZE[phase])
+	return run_machine(SANITIZER,WASHED,SANITIZED,BATCH_SIZE[phase]) if installed[0] else 0
 
 
 func bulk_finish() -> int:
-	return run_machine(3,SANITIZED,CLEAN,BATCH_SIZE[phase])
+	return run_machine(3,SANITIZED,CLEAN,BATCH_SIZE[phase]) if installed[0] else 0
 
 
 func stage_for_sale() -> int:
-	return run_machine(PACKER,CLEAN,FOR_SALE,sum_queue(CLEAN))
+	return run_machine(PACKER,CLEAN,FOR_SALE,sum_queue(CLEAN)) if installed[0] else 0
 
 
 func sale_stock(bottle_type: int) -> int:
@@ -233,13 +394,65 @@ func sale_stock(bottle_type: int) -> int:
 	return queues[FOR_SALE][first] + queues[FOR_SALE][first+1]
 
 
+func normal_demand(bottle_type: int) -> int:
+	return DAILY_DEMAND[phase]*BUYER_DEMAND_PERCENT[bottle_type]/100
+
+
+func demand_swing(bottle_type: int) -> int:
+	return DEMAND_SWING[(market_day-1+bottle_type*2)%DEMAND_SWING.size()]
+
+
+func buyer_quota(bottle_type: int) -> int:
+	var normal: int = normal_demand(bottle_type)
+	var planned: int = normal*(100+demand_swing(bottle_type))/100
+	# Yesterday's deliveries partially cover today's demand.
+	return maxi(normal*35/100,planned-bought_yesterday[bottle_type]*55/100)
+
+
+func buyer_remaining(bottle_type: int) -> int:
+	return maxi(0,buyer_quota(bottle_type)-bought_today[bottle_type])
+
+
+func sale_unit_price(bottle_type: int) -> int:
+	var normal: int = normal_demand(bottle_type)
+	var stock_discount: int = mini(28,sale_stock(bottle_type)*55/normal)
+	var restock_discount: int = mini(11,bought_yesterday[bottle_type]*18/normal)
+	# The opening shipment must still fund both the first machine and the thin blade.
+	var floor_percent: int = 95 if phase == 0 else 70
+	var percent: int = clampi(112+demand_swing(bottle_type)-stock_discount-restock_discount,floor_percent,130)
+	return BASE_PRICES[bottle_type]*percent/100
+
+
+func wallet_cents() -> int:
+	return credits*100+credit_cents
+
+
+func market_seconds_left() -> float:
+	return MARKET_DAY_SECONDS-market_elapsed
+
+
+func turn_market_day() -> void:
+	market_day += 1
+	market_elapsed = 0.0
+	bought_yesterday.assign(bought_today)
+	bought_today.fill(0)
+
+
+func market_wait_available() -> bool:
+	for i in NAMES.size():
+		if sale_stock(i) > 0 and buyer_remaining(i) == 0:
+			return true
+	return false
+
+
+# The quote contains bottle count and total cents.
 func sale_quote(bottle_type: int, limit: int = -1) -> Vector2i:
 	if bottle_type < 0 or bottle_type >= NAMES.size():
 		return Vector2i.ZERO
-	var units: int = mini(sale_stock(bottle_type), ORDER_LIMIT[phase])
+	var units: int = mini(sale_stock(bottle_type),buyer_remaining(bottle_type))
 	if limit >= 0:
 		units = mini(units, limit)
-	return Vector2i(units, units*PRICES[bottle_type])
+	return Vector2i(units,units*sale_unit_price(bottle_type)) if units > 0 else Vector2i.ZERO
 
 
 func sell_to(bottle_type: int, limit: int = -1) -> Vector2i:
@@ -254,7 +467,10 @@ func sell_to(bottle_type: int, limit: int = -1) -> Vector2i:
 	if installed[6]:
 		machine_work[6] += quote.x
 	sold_by_type[bottle_type] += quote.x
-	credits += quote.y
+	bought_today[bottle_type] += quote.x
+	var payment: int = credit_cents+quote.y
+	credits += payment/100
+	credit_cents = payment%100
 	check_story_recovery()
 	return quote
 
@@ -303,7 +519,7 @@ func choose_scraper(index: int) -> bool:
 
 func unlocked(index: int) -> bool:
 	match index:
-		0: return true
+		0: return delivered > 0 or installed[0]
 		1: return installed[0]
 		2, 3, 4: return phase >= 2
 		5: return phase >= 2 and installed[1]
@@ -397,6 +613,18 @@ func move(source: int, target: int, limit: int, mode: int = 0, charge_effort: bo
 
 func advance(delta: float) -> void:
 	var elapsed: float = delta * rush
+	while elapsed > 0.0:
+		var remaining: float = market_seconds_left()
+		var step: float = minf(elapsed,remaining)
+		advance_operations(step)
+		elapsed -= step
+		if step == remaining:
+			turn_market_day()
+		else:
+			market_elapsed += step
+
+
+func advance_operations(elapsed: float) -> void:
 	clock += elapsed
 	if day_active and trucks < DAY_TRUCKS and clock >= next_truck:
 		while trucks < DAY_TRUCKS and clock >= next_truck:
@@ -439,11 +667,17 @@ func run_machine(equipment: int, source: int, target: int, limit: int, mode: int
 
 func serialize() -> Dictionary:
 	return {
-		"version": 6, "queues": queues, "installed": installed,
+		"version": 9, "queues": queues, "installed": installed,
 		"sold_by_type": sold_by_type, "credits": credits, "received": received,
+		"credit_cents": credit_cents, "market_day": market_day, "market_elapsed": market_elapsed,
+		"bought_today": bought_today, "bought_yesterday": bought_yesterday,
 		"story_read": story_read, "story_recovered": story_recovered,
 		"delivered": delivered, "recycled": recycled, "phase": phase,
 		"priority": priority, "held": held, "held_queue": held_queue, "trucks": trucks, "clock": clock,
+		"carried": carried.map(func(item: Vector2i) -> Array: return [item.x,item.y]), "pushing_cart": pushing_cart,
+		"parked_load": parked_load.map(func(item: Vector2i) -> Array: return [item.x,item.y]),
+		"crate_level": crate_level, "bench_crate": bench_crate, "hand_crate": hand_crate, "cart_crates": cart_crates,
+		"parked_at": [parked_at.x,parked_at.y,parked_at.z,parked_angle] if parked_at.is_finite() else [],
 		"next_truck": next_truck, "day_active": day_active, "day_complete": day_complete,
 		"day_base_delivered": day_base_delivered, "day_base_recycled": day_base_recycled, "day_truck_size": day_truck_size,
 		"rush": rush, "auto_sales": auto_sales, "owned_scraper": owned_scraper, "equipped_scraper": equipped_scraper,
@@ -454,7 +688,7 @@ func restore(data: Variant) -> void:
 	if not data is Dictionary:
 		return
 	var version: int = int(data.get("version", 0))
-	if version not in [1,2,3,4,5,6]:
+	if version < 1 or version > 9:
 		return
 	var legacy: bool = version == 1
 	var expected_queues: int = QUEUE_NAMES.size()-int(version < 3)-int(legacy)
@@ -480,6 +714,14 @@ func restore(data: Variant) -> void:
 	for i in sold_by_type.size():
 		sold_by_type[i] = int(data.sold_by_type[i])
 	credits = int(data.credits)
+	credit_cents = clampi(int(data.get("credit_cents",0)),0,99) if version >= 9 else 0
+	market_day = maxi(1,int(data.get("market_day",1))) if version >= 9 else 1
+	market_elapsed = clampf(float(data.get("market_elapsed",0.0)),0.0,MARKET_DAY_SECONDS) if version >= 9 else 0.0
+	bought_today.fill(0)
+	bought_yesterday.fill(0)
+	if version >= 9:
+		read_market_purchases(data.get("bought_today"),bought_today)
+		read_market_purchases(data.get("bought_yesterday"),bought_yesterday)
 	owned_scraper = clampi(int(data.get("owned_scraper",0)),0,SCRAPERS.size()-1) if version >= 4 else 0
 	equipped_scraper = clampi(int(data.get("equipped_scraper",0)),0,owned_scraper) if version >= 4 else 0
 	received = int(data.received)
@@ -492,6 +734,29 @@ func restore(data: Variant) -> void:
 	priority = int(data.priority)
 	held = int(data.held)
 	held_queue = clampi(int(data.get("held_queue", RAW)), RAW, CLEAN)
+	carried = read_transport(data.get("carried",[]) if version >= 7 else [])
+	parked_load = read_transport(data.get("parked_load",[]) if version >= 7 else [])
+	pushing_cart = cart_unlocked() and version >= 7 and bool(data.get("pushing_cart",false))
+	crate_level = clampi(int(data.get("crate_level",0)),0,CRATE_CAPACITIES.size()-1) if version >= 8 else 0
+	bench_crate = read_crate(data.get("bench_crate",[]) if version >= 8 else [])
+	hand_crate = read_crate(data.get("hand_crate",[]) if version >= 8 else [])
+	cart_crates.clear()
+	var stored_crates: Variant = data.get("cart_crates",[])
+	if version >= 8 and cart_unlocked() and stored_crates is Array:
+		for stored in stored_crates:
+			var cargo: Array[int] = read_crate(stored)
+			if not cargo.is_empty():
+				if cart_crates.size() < CART_CRATE_LIMIT:
+					cart_crates.append(cargo)
+				else:
+					for item in cargo:
+						queues[CLEAN][item] += 1
+	parked_at = Vector3.INF
+	parked_angle = 0.0
+	var parked: Variant = data.get("parked_at",[])
+	if cart_unlocked() and version >= 7 and parked is Array and parked.size() == 4:
+		parked_at = Vector3(float(parked[0]),float(parked[1]),float(parked[2]))
+		parked_angle = float(parked[3])
 	trucks = int(data.trucks)
 	clock = float(data.clock)
 	next_truck = float(data.next_truck)
@@ -507,8 +772,53 @@ func restore(data: Variant) -> void:
 		day_truck_size = LEGACY_TRUCK_SIZE
 	rush = int(data.rush)
 	enable_auto_sales(bool(installed[PACKER]) if version < 3 else bool(data.get("auto_sales",false)))
-	return_held()
+	if version >= 7:
+		if held_queue == CLEAN:
+			if not set_down():
+				return_held()
+		else:
+			stow_held()
+		while carried.size() > carry_capacity():
+			var item: Vector2i = carried.pop_back()
+			queues[item.y][item.x] += 1
+		var parked_capacity: int = CART_CAPACITY-BAG_CAPACITY if cart_unlocked() and not pushing_cart else 0
+		while parked_load.size() > parked_capacity:
+			var item: Vector2i = parked_load.pop_back()
+			queues[item.y][item.x] += 1
+	else:
+		return_held()
+	refill_legacy_crate()
 	if version < 5 and phase == 0 and received == 24 and not installed[0] and (in_yard() > 0 or credits < COST[0]):
 		for item in STARTER_STOCK.size():
 			queues[RAW][item] += STARTER_STOCK[item]-LEGACY_STARTER_STOCK[item]
 		received = STARTER_SIZE
+
+
+func read_transport(stored: Variant) -> Array[Vector2i]:
+	var items: Array[Vector2i] = []
+	if stored is Array:
+		for pair in stored:
+			if pair is Array and pair.size() == 2:
+				var item := Vector2i(int(pair[0]),int(pair[1]))
+				if item.x >= 0 and item.x < NAMES.size()*CONDITION.size() and item.y in BENCH_QUEUES:
+					items.append(item)
+	return items
+
+
+func read_market_purchases(stored: Variant, purchases: Array[int]) -> void:
+	if stored is Array and stored.size() == purchases.size():
+		for i in purchases.size():
+			purchases[i] = maxi(0,int(stored[i]))
+
+
+func read_crate(stored: Variant) -> Array[int]:
+	var items: Array[int] = []
+	if stored is Array:
+		for value in stored:
+			var item: int = int(value)
+			if item >= 0 and item < NAMES.size()*CONDITION.size() and grade(item) < 2:
+				if items.size() < crate_capacity():
+					items.append(item)
+				else:
+					queues[CLEAN][item] += 1
+	return items

@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode cull_disabled;
+render_mode cull_disabled, shadows_disabled;
 
 uniform vec4 paper : source_color = vec4(0.75, 0.69, 0.50, 1.0);
 uniform vec4 ink : source_color = vec4(0.24, 0.29, 0.17, 1.0);
@@ -7,10 +7,12 @@ uniform float printed = 1.0;
 uniform bool sleeve = false;
 uniform float scraped = 0.0;
 uniform int scrape_passes = 1;
+uniform vec2 label_band = vec2(0.067, 0.148);
+uniform float adhesion_threshold = 0.62;
 varying float label_height;
 
 void vertex() {
-	label_height = clamp((VERTEX.y - 0.067) / 0.081, 0.0, 1.0);
+	label_height = clamp((VERTEX.y - label_band.x) / (label_band.y - label_band.x), 0.0, 1.0);
 }
 
 float grain(vec2 uv) {
@@ -24,7 +26,7 @@ void fragment() {
 	float fiber = grain(floor(uv * vec2(626.0, 355.0)));
 	vec2 islands = uv + vec2(sin(uv.y*33.0), cos(uv.x*27.0)) * 0.018;
 	float adhesion = grain(floor(islands*vec2(18.0, 12.0)) + vec2(3.0, 19.0));
-	float pass_needed = scrape_passes > 1 ? step(0.62, adhesion) : 0.0;
+	float pass_needed = scrape_passes > 1 ? step(adhesion_threshold, adhesion) : 0.0;
 	if (scrape_passes > 2) {
 		pass_needed += step(0.86, adhesion);
 	}
