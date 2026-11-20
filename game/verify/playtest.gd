@@ -31,6 +31,7 @@ func run() -> void:
 	while game.scene_loading:
 		await process_frame
 	await capture("01-worksite")
+	await verify_opening_journal()
 	verify_line_layout()
 	await verify_room()
 	await verify_sale_shelf()
@@ -220,6 +221,8 @@ func run() -> void:
 	check(game.site.label_offcuts.size() >= 5 and game.site.label_offcuts.size() <= 24,
 		"scraping leaves a bounded pile of fragments on the bench")
 	await verify_first_sale()
+	check(game.model.story_chapter() == Yard.Story.FIRST_SALE and game.ui.story_hint.text.contains("新章节"),
+		"first payout unlocks an unread story chapter")
 	game.status_ttl = 0.0
 	game.on_action("open_tools",0)
 	check(game.ui.tool_shop.is_visible_in_tree() and game.ui.tool_buttons[2].disabled,
@@ -233,6 +236,7 @@ func run() -> void:
 	game.on_action("open_operations",0)
 	button(game.ui.machine_buttons[0])
 	check(game.model.installed[0], "the first tray still funds the first stripper after buying the thin blade")
+	check(game.model.story_chapter() == Yard.Story.FIRST_MACHINE, "installing the first machine turns the story page")
 	button(game.ui.place_order)
 	check(game.model.phase == 1 and game.model.in_yard() == 600, "street restock delivers 600 bottles")
 	game.take_bottle(0)
@@ -279,6 +283,7 @@ func run() -> void:
 	check(game.model.in_yard() == 0, "special branch clears sauce bottles")
 	button(game.ui.place_order)
 	check(game.model.phase == 3 and game.model.in_yard() == 48000, "first 48,000-bottle truck")
+	check(game.model.story_chapter() == Yard.Story.FIRST_TRUCK, "the first full truck unlocks the working capital goal")
 	verify_type(4)
 	verify_type(5)
 	await capture("05-terminal")
@@ -289,6 +294,7 @@ func run() -> void:
 	advance_for(game.model,90)
 	game.refresh()
 	check(game.model.in_yard() == 0, "mixed truck fully processed")
+	await verify_ending_journal()
 	button(game.ui.place_order)
 	check(game.model.phase == 4 and game.model.day_active and game.model.trucks == 1, "regional dispatch starts with the first truck")
 	game.show_office(false)
@@ -317,11 +323,77 @@ func run() -> void:
 		check(restored.sold_by_type[type] > 10000, "bottle type %d has its own commercial output" % type)
 	verify_migration()
 	verify_legacy_volume()
+	verify_story_save()
 	verify_scraper_feedback()
 	for i in 24:
 		await process_frame
 	print("PLAYTEST %d passed / %d failed" % [checks - failures,failures])
 	quit(0 if failures == 0 else 1)
+
+
+func verify_opening_journal() -> void:
+	var shortcut := InputEventKey.new()
+	shortcut.physical_keycode = KEY_J
+	shortcut.pressed = true
+	game._input(shortcut)
+	check(game.ui.journal.visible and game.model.story_read == Yard.Story.OPENING and
+		game.ui.journal_page.text.contains("12,000") and game.ui.journal_buttons[Yard.Story.FIRST_SALE].disabled,
+		"J opens the stock loss prologue but keeps later chapters locked")
+	game.on_action("journal_chapter",Yard.Story.RECOVERED)
+	check(game.ui.journal_index == Yard.Story.OPENING, "a locked chapter cannot be opened")
+	shortcut.physical_keycode = KEY_E
+	game._input(shortcut)
+	check(not game.working and game.model.credits == 0 and game.model.received == 72,
+		"reading the prologue does not interact with the bench or change the economy")
+	await capture("30-story-opening")
+	shortcut.physical_keycode = KEY_ESCAPE
+	game._input(shortcut)
+	check(not game.ui.journal.visible, "Escape closes the journal")
+
+
+func verify_ending_journal() -> void:
+	check(game.model.story_recovered and game.model.credits >= Yard.STORY_TARGET and
+		game.model.story_chapter() == Yard.Story.RECOVERED, "truck sales meet the story goal without charging the balance")
+	game.show_journal(true)
+	check(game.ui.journal_index == Yard.Story.RECOVERED and game.ui.journal_goal.text.contains("主线完成") and
+		game.ui.journal_progress.size.x == 592.0, "the ending is open and its balance goal is complete")
+	await capture("31-story-ending")
+	button(game.ui.journal_buttons[Yard.Story.OPENING])
+	check(game.ui.journal_index == Yard.Story.OPENING and game.model.story_read == Yard.Story.RECOVERED,
+		"older pages can be reread without resetting progress")
+	button(game.ui.journal_close)
+	check(game.office and not game.ui.journal.visible and game.ui.office_board.is_visible_in_tree(),
+		"closing the journal restores the station terminal")
+
+
+func verify_story_save() -> void:
+	var business := Yard.new()
+	business.phase = Yard.STORY_TRUCK_PHASE
+	business.credits = Yard.STORY_TARGET-1
+	business.queues[Yard.FOR_SALE][0] = 1
+	check(not business.story_recovered and business.story_chapter() == Yard.Story.FIRST_TRUCK,
+		"just below the target does not qualify even with goods waiting to sell")
+	var paid: Vector2i = business.sell_to(0)
+	check(paid.x == 1 and business.story_recovered and business.credits == Yard.STORY_TARGET-1+paid.y,
+		"settling a sale that crosses the target unlocks the story exactly once")
+	business.story_read = Yard.Story.RECOVERED
+	business.credits = 75
+	var saved: Dictionary = JSON.parse_string(JSON.stringify(business.serialize()))
+	var restored := Yard.new()
+	restored.restore(saved)
+	check(restored.story_recovered and restored.story_read == Yard.Story.RECOVERED and restored.credits == 75,
+		"the read ending survives reload after the balance falls below the target")
+	saved.version = 5
+	saved.erase("story_read")
+	saved.erase("story_recovered")
+	var legacy := Yard.new()
+	legacy.restore(saved)
+	check(not legacy.story_recovered and legacy.story_read == -1 and legacy.story_chapter() == Yard.Story.FIRST_TRUCK and legacy.credits == 75,
+		"a v5 save enters the mainline at its existing progress without losing credits")
+	saved.credits = Yard.STORY_TARGET
+	legacy.restore(saved)
+	check(legacy.story_recovered and legacy.story_chapter() == Yard.Story.RECOVERED,
+		"an old save already at the capital goal does not have to earn it again")
 
 
 func verify_line_layout() -> void:

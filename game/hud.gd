@@ -10,6 +10,19 @@ const GREEN = Color("a9c39f")
 const PANEL = Color("18221fe8")
 const PAPER = Color("25322e")
 const RULE = Color("45594c")
+const STORY_NAMES = ["收盘之后", "第一笔回款", "会转的旧机器", "货车到站", "账本翻页"]
+const STORY_PAGES = [
+	"从前下班先看股票，睡前还要看一遍。那天收盘，你终于把交易记录从头加了一次：攒下的工资，亏了 ¥%s。\n\n老周把街角闲着的回收点借给你。他掀开帘子，指着一筐空瓶：“先把这些做完。钱要等人验完货，才算是你的。”",
+	"收购商挑出一只酒瓶，划过瓶口，看了看瓶底的水印，才在单子上打勾。\n\n你把第一笔回款抄进账本。数不大，倒是头一回知道每一块钱是从哪儿来的。",
+	"二手脱标机启动时咯噔了一下。你把手搭在外壳上，确认它没卡瓶，又伸手把桌上的旧刮刀放回原处。\n\n老周问：“回款都拿去买机器，不心疼？”你说心疼，还是把下一筐推了过去。",
+	"货车倒进院子，地磅的数字还在跳。你没催司机，先核来料单，再看水箱和成品筐里还剩多少位置。\n\n账本首页还夹着那张交割单。你想在这一页下面另记一笔：回收站的周转金，也能攒到那个数。",
+	"最后一笔结算到账，你在首页记下 ¥%s，旁边没有加号，也没有箭头。\n\n老周问要不要把钱提出来。你留在了站里。明早还得付电费，洗瓶机那只漏水的接头也该换了。你合上账本，去关水。",
+]
+const STORY_GOALS = [
+	"处理并卖出第一笔成品空瓶。", "用回款安装台式脱标机。",
+	"处理散货和托盘货，接下第一辆满载货车。", "通过出货结算，把站里的周转金攒到目标金额。",
+	"回收站照常营业，仍可扩产并挑战区域班次。",
+]
 
 var world_view: Control
 var office: Control
@@ -24,6 +37,17 @@ var number_font: SystemFont
 var site: Label
 var objective: Label
 var detail: Label
+var story_title: Label
+var story_hint: Label
+var journal: ColorRect
+var journal_index: int = 0
+var journal_buttons: Array[Button] = []
+var journal_title: Label
+var journal_page: Label
+var journal_goal: Label
+var journal_balance: Label
+var journal_progress: ColorRect
+var journal_close: Button
 var money: Label
 var outbound: Label
 var queue_total: Label
@@ -162,6 +186,9 @@ func build() -> void:
 	detail = label(assignment,"",Vector2(14,37),Vector2(248,50),14,MUTED)
 	detail.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	var story_card := panel(world_view,Vector2(25,202),Vector2(278,57))
+	story_title = label(story_card,"",Vector2(14,4),Vector2(248,26),16,ACCENT)
+	story_hint = label(story_card,"",Vector2(14,30),Vector2(248,21),13,MUTED)
 	var scoreboard := panel(world_view,Vector2(880,23),Vector2(375,64))
 	money = meter(scoreboard, "资金", 12)
 	queue_total = meter(scoreboard, "站内库存", 135)
@@ -198,6 +225,61 @@ func build() -> void:
 	label(resumable,"点击画面继续    ·    回收站会继续运转",Vector2(10,61),Vector2(390,32),16,MUTED,HORIZONTAL_ALIGNMENT_CENTER)
 	resumable.hide()
 	build_office()
+	build_journal()
+
+
+func build_journal() -> void:
+	journal = ColorRect.new()
+	journal.size = size
+	journal.color = Color("111a17ec")
+	journal.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(journal)
+	var cover := panel(journal,Vector2(182,127),Vector2(916,546),PAPER)
+	label(cover,"街边回收点  /  主线故事",Vector2(27,17),Vector2(460,25),14,ACCENT)
+	label(cover,"营业簿",Vector2(26,42),Vector2(460,47),34)
+	journal_close = button(cover,"合上账本  Esc","close_journal",Vector2(743,31),Vector2(146,37))
+	var tabs := panel(cover,Vector2(26,104),Vector2(208,411),Color("1a2722"))
+	label(tabs,"章节",Vector2(13,12),Vector2(180,25),15,MUTED)
+	for index in STORY_NAMES.size():
+		journal_buttons.append(button(tabs,"","journal_chapter",Vector2(12,51+index*48),Vector2(184,39),index))
+	var page := panel(cover,Vector2(249,104),Vector2(640,411),Color("2d3d34"))
+	journal_title = label(page,"",Vector2(24,14),Vector2(592,38),26)
+	journal_page = label(page,"",Vector2(24,68),Vector2(592,220),20,INK)
+	journal_page.vertical_alignment = VERTICAL_ALIGNMENT_TOP
+	journal_page.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	journal_goal = label(page,"",Vector2(24,285),Vector2(592,47),16,ACCENT)
+	journal_goal.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	journal_balance = label(page,"",Vector2(24,341),Vector2(592,32),17,GREEN)
+	var track := ColorRect.new()
+	track.position = Vector2(24,381)
+	track.size = Vector2(592,5)
+	track.color = RULE
+	track.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	page.add_child(track)
+	journal_progress = ColorRect.new()
+	journal_progress.position = track.position
+	journal_progress.size = Vector2(0,track.size.y)
+	journal_progress.color = GREEN
+	journal_progress.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	page.add_child(journal_progress)
+	journal.hide()
+
+
+func update_journal(model) -> void:
+	var chapter: int = model.story_chapter()
+	for index in journal_buttons.size():
+		var unlocked: bool = index <= chapter
+		journal_buttons[index].disabled = not unlocked or index == journal_index
+		journal_buttons[index].text = "%02d   %s" % [index+1,STORY_NAMES[index] if unlocked else "未解锁"]
+		journal_buttons[index].add_theme_color_override("font_disabled_color",ACCENT if index == journal_index else MUTED)
+	journal_title.text = STORY_NAMES[journal_index]
+	journal_page.text = STORY_PAGES[journal_index]
+	if journal_index in [Yard.Story.OPENING,Yard.Story.RECOVERED]:
+		journal_page.text = journal_page.text % comma(Yard.STORY_TARGET)
+	journal_goal.text = ("主线完成  ·  " if model.story_recovered else "当前目标  ·  ") + STORY_GOALS[chapter]
+	journal_balance.text = "周转金已达到目标  ¥ %s" % comma(Yard.STORY_TARGET) if model.story_recovered else (
+		"周转金  ¥ %s  /  ¥ %s" % [comma(model.credits),comma(Yard.STORY_TARGET)])
+	journal_progress.size.x = 592.0 if model.story_recovered else 592.0*clampf(float(model.credits)/Yard.STORY_TARGET,0.0,1.0)
 
 
 func meter(parent: Control, name: String, x: float) -> Label:
@@ -411,6 +493,11 @@ func comma(value: int) -> String:
 
 
 func update_model(model, status: String) -> void:
+	var chapter: int = model.story_chapter()
+	story_title.text = "主线  ·  " + STORY_NAMES[chapter]
+	story_hint.text = "J 查看新章节" if chapter > model.story_read else "J 翻开营业簿"
+	if journal.visible:
+		update_journal(model)
 	site.text = Yard.AREA[model.phase]
 	money.text = "¥ " + comma(model.credits)
 	queue_total.text = comma(model.in_yard())
@@ -468,7 +555,7 @@ func update_model(model, status: String) -> void:
 
 
 func update_work(hand, is_working: bool, captured: bool, prompt: String, info: String) -> void:
-	var paperwork: bool = office.visible
+	var paperwork: bool = office.visible or journal.visible
 	world_view.visible = not paperwork
 	resumable.visible = not paperwork and not captured
 	bottom.visible = is_working and captured

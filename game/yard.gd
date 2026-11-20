@@ -52,11 +52,16 @@ const SANITIZER = 7
 const BENCH_QUEUES = [SANITIZED, WASHED, STRIPPED, SORTED, RAW]
 const BATCH_SIZE = [STARTER_SIZE, 200, 600, 2400, 4800]
 const PHASE_MULTIPLIERS = [1, 4, 12, 40, 425]
+const STORY_TARGET = 12000
+const STORY_TRUCK_PHASE = 3
+enum Story { OPENING, FIRST_SALE, FIRST_MACHINE, FIRST_TRUCK, RECOVERED }
 
 var queues: Array = []
 var installed: Array = [false, false, false, false, false, false, false, false]
 var sold_by_type: Array = [0, 0, 0, 0, 0, 0]
 var credits: int = 0
+var story_read: int = -1
+var story_recovered: bool = false
 var owned_scraper: int = 0
 var equipped_scraper: int = 0
 var received: int = STARTER_SIZE
@@ -93,6 +98,23 @@ func _init() -> void:
 
 func kind(item: int) -> int:
 	return item / CONDITION.size()
+
+
+func story_chapter() -> int:
+	if story_recovered:
+		return Story.RECOVERED
+	if phase >= STORY_TRUCK_PHASE:
+		return Story.FIRST_TRUCK
+	if installed[0]:
+		return Story.FIRST_MACHINE
+	if delivered > 0:
+		return Story.FIRST_SALE
+	return Story.OPENING
+
+
+func check_story_recovery() -> void:
+	if phase >= STORY_TRUCK_PHASE and credits >= STORY_TARGET:
+		story_recovered = true
 
 
 func grade(item: int) -> int:
@@ -233,6 +255,7 @@ func sell_to(bottle_type: int, limit: int = -1) -> Vector2i:
 		machine_work[6] += quote.x
 	sold_by_type[bottle_type] += quote.x
 	credits += quote.y
+	check_story_recovery()
 	return quote
 
 
@@ -306,6 +329,7 @@ func receive() -> bool:
 	if not can_receive():
 		return false
 	phase = next_phase()
+	check_story_recovery()
 	if phase < 4:
 		manifest(phase, 0)
 	else:
@@ -415,8 +439,9 @@ func run_machine(equipment: int, source: int, target: int, limit: int, mode: int
 
 func serialize() -> Dictionary:
 	return {
-		"version": 5, "queues": queues, "installed": installed,
+		"version": 6, "queues": queues, "installed": installed,
 		"sold_by_type": sold_by_type, "credits": credits, "received": received,
+		"story_read": story_read, "story_recovered": story_recovered,
 		"delivered": delivered, "recycled": recycled, "phase": phase,
 		"priority": priority, "held": held, "held_queue": held_queue, "trucks": trucks, "clock": clock,
 		"next_truck": next_truck, "day_active": day_active, "day_complete": day_complete,
@@ -429,7 +454,7 @@ func restore(data: Variant) -> void:
 	if not data is Dictionary:
 		return
 	var version: int = int(data.get("version", 0))
-	if version not in [1,2,3,4,5]:
+	if version not in [1,2,3,4,5,6]:
 		return
 	var legacy: bool = version == 1
 	var expected_queues: int = QUEUE_NAMES.size()-int(version < 3)-int(legacy)
@@ -461,6 +486,9 @@ func restore(data: Variant) -> void:
 	delivered = int(data.delivered)
 	recycled = int(data.recycled)
 	phase = int(data.phase)
+	story_recovered = bool(data.get("story_recovered",false))
+	check_story_recovery()
+	story_read = clampi(int(data.get("story_read",-1)),-1,story_chapter())
 	priority = int(data.priority)
 	held = int(data.held)
 	held_queue = clampi(int(data.get("held_queue", RAW)), RAW, CLEAN)

@@ -34,6 +34,7 @@ var sounds: int = 0
 var context: String = ""
 var hand_key: OmniLight3D
 var scene_loading: bool = false
+var journal_mouse_mode: Input.MouseMode = Input.MOUSE_MODE_CAPTURED
 
 
 func _ready() -> void:
@@ -41,7 +42,8 @@ func _ready() -> void:
 	save_path = ProjectSettings.globalize_path("res://yard-save.json")
 	if not OS.has_feature("editor"):
 		save_path = OS.get_executable_path().get_base_dir().path_join("yard-save.json")
-	if not is_test and FileAccess.file_exists(save_path):
+	var has_save: bool = not is_test and FileAccess.file_exists(save_path)
+	if has_save:
 		model.restore(JSON.parse_string(FileAccess.get_file_as_string(save_path)))
 	add_child(site)
 	site.build()
@@ -59,6 +61,8 @@ func _ready() -> void:
 	get_tree().auto_accept_quit = false
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	refresh()
+	if not has_save and not is_test:
+		show_journal(true)
 	fade_in_site()
 
 
@@ -121,7 +125,7 @@ func _physics_process(delta: float) -> void:
 		player.velocity = Vector3.ZERO
 		return
 	var direction: Vector3 = Vector3.ZERO
-	if not office and not scene_loading and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+	if not office and not ui.journal.visible and not scene_loading and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		direction.x = float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A))
 		direction.z = float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W))
 	var desired: Vector3 = Basis(Vector3.UP,yaw) * direction.normalized() * (5.8 if Input.is_physical_key_pressed(KEY_SHIFT) else 3.45)
@@ -245,6 +249,13 @@ func target_is_visible(point: Vector3) -> bool:
 
 func _input(event: InputEvent) -> void:
 	if scene_loading:
+		return
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.physical_keycode == KEY_J or (ui.journal.visible and event.physical_keycode == KEY_ESCAPE):
+			show_journal(not ui.journal.visible)
+			get_viewport().set_input_as_handled()
+			return
+	if ui.journal.visible:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.physical_keycode:
@@ -407,8 +418,36 @@ func show_office(open: bool, sales: bool = false) -> void:
 	refresh()
 
 
+func show_journal(open: bool) -> void:
+	if ui.journal.visible == open:
+		return
+	end_work_gesture()
+	ui.journal.visible = open
+	if open:
+		journal_mouse_mode = Input.mouse_mode
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		read_journal(model.story_chapter())
+	else:
+		Input.mouse_mode = journal_mouse_mode
+		refresh()
+		save()
+
+
+func read_journal(chapter: int) -> void:
+	if ui.journal.visible and chapter >= 0 and chapter <= model.story_chapter():
+		ui.journal_index = chapter
+		model.story_read = maxi(model.story_read,chapter)
+		refresh()
+
+
 func on_action(id: String, value: int) -> void:
 	match id:
+		"close_journal":
+			show_journal(false)
+			return
+		"journal_chapter":
+			read_journal(value)
+			return
 		"close": show_office(false)
 		"open_sales": show_office(true,true)
 		"open_operations": show_office(true)
