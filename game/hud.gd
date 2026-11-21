@@ -10,6 +10,8 @@ const GREEN = Color("a9c39f")
 const PANEL = Color("18221fe8")
 const PAPER = Color("25322e")
 const RULE = Color("45594c")
+const EMPTY_SLOT = Color("41524a")
+const CARRY_METER_WIDTH = 351.0
 const STORY_NAMES = ["收盘之后", "第一笔回款", "会转的旧机器", "货车到站", "账本翻页"]
 const STORY_PAGES = [
 	"从前下班先看股票，睡前还要看一遍。那天收盘，你终于把交易记录从头加了一次：攒下的工资，亏了 ¥%s。\n\n老周把街角闲着的回收点借给你。他拉开车库滑门，指了指地上的空瓶：“先把这些做完。钱要等人验完货，才算是你的。”",
@@ -52,10 +54,14 @@ var money: Label
 var outbound: Label
 var queue_total: Label
 var carry_title: Label
+var carry_secondary: Label
+var carry_slots: Array[ColorRect] = []
 var carry_contents: Label
 var helper: Label
 var reticle: Label
+var target_card: Panel
 var target_label: Label
+var target_hint: Label
 var bottom: Panel
 var work_name: Label
 var work_action: Label
@@ -69,6 +75,9 @@ var office_detail: Label
 var manifest: Label
 var notice: Label
 var place_order: Button
+var bag_upgrade: Button
+var bag_caption: Label
+var bag_details: Label
 var feed: Button
 var wash: Button
 var sanitize: Button
@@ -205,15 +214,24 @@ func build() -> void:
 	money = meter(scoreboard, "资金", 12)
 	queue_total = meter(scoreboard, "站内库存", 135)
 	outbound = meter(scoreboard, "累计出货", 258)
-	var inventory := panel(world_view,Vector2(880,97),Vector2(375,75))
-	carry_title = label(inventory,"",Vector2(12,6),Vector2(351,25),17,ACCENT)
-	carry_contents = label(inventory,"",Vector2(12,29),Vector2(351,39),14,INK)
+	var inventory := panel(world_view,Vector2(880,97),Vector2(375,94))
+	carry_title = label(inventory,"",Vector2(12,6),Vector2(156,25),17,ACCENT)
+	carry_secondary = label(inventory,"",Vector2(168,7),Vector2(195,24),14,MUTED,HORIZONTAL_ALIGNMENT_RIGHT)
+	for i in Yard.CART_CAPACITY:
+		var slot := ColorRect.new()
+		slot.position.y = 35.0
+		slot.size.y = 7.0
+		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		inventory.add_child(slot)
+		carry_slots.append(slot)
+	carry_contents = label(inventory,"",Vector2(12,50),Vector2(351,41),14,INK)
 	carry_contents.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	carry_contents.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	reticle = label(world_view,"·",Vector2(626,383),Vector2(28,28),30,INK,HORIZONTAL_ALIGNMENT_CENTER)
-	target_label = label(world_view,"",Vector2(415,419),Vector2(450,34),16,INK,HORIZONTAL_ALIGNMENT_CENTER)
-	target_label.add_theme_color_override("font_shadow_color",Color("132821"))
-	target_label.add_theme_constant_override("shadow_offset_y",2)
+	target_card = panel(world_view,Vector2(402,507),Vector2(476,36))
+	target_label = label(target_card,"",Vector2(10,4),Vector2(456,27),16,INK,HORIZONTAL_ALIGNMENT_CENTER)
+	target_hint = label(target_card,"",Vector2(10,30),Vector2(456,22),14,MUTED,HORIZONTAL_ALIGNMENT_CENTER)
+	target_card.hide()
 	helper = label(world_view,"WASD 移动    ·    E 交互    ·    Tab 站务    ·    Esc 释放鼠标",
 		Vector2(25,754),Vector2(1228,30),15,INK)
 	helper.add_theme_color_override("font_shadow_color",Color("17221e"))
@@ -322,7 +340,13 @@ func build_office() -> void:
 	office_board = board
 	label(board,"站务终端",Vector2(25,14),Vector2(240,49),29)
 	label(board,"到货、设备与成品发运",Vector2(26,61),Vector2(366,23),15,MUTED)
-	button(board,"刀具升级","open_tools",Vector2(580,24),Vector2(134,39))
+	var bag_card := panel(board,Vector2(382,16),Vector2(351,68),PAPER)
+	bag_caption = label(bag_card,"背包容量",Vector2(12,6),Vector2(188,25),16,INK)
+	bag_details = label(bag_card,"",Vector2(12,34),Vector2(188,22),14,MUTED)
+	bag_upgrade = button(bag_card,"升级背包","upgrade_bag",Vector2(204,14),Vector2(133,40))
+	bag_upgrade.add_theme_stylebox_override("normal",make_style(Color("584833"),Color("bd925f")))
+	bag_upgrade.add_theme_stylebox_override("hover",make_style(Color("735938"),ACCENT))
+	button(board,"刀具升级","open_tools",Vector2(747,24),Vector2(121,39))
 	button(board,"返回现场  Esc","close",Vector2(884,24),Vector2(142,39))
 	var left := panel(board,Vector2(23,107),Vector2(280,494),PAPER)
 	var center := panel(board,Vector2(319,107),Vector2(385,494),PAPER)
@@ -547,7 +571,7 @@ func update_model(model, status: String) -> void:
 	var next: int = model.next_phase()
 	var opportunities: Array = [
 		"处理首批空瓶，把成品筐搬到滑门外的收购窗口。",
-		"随身可带 5 只。可继续手工处理，也可批量脱标、清洗和出货。",
+		"可继续手工处理，也可批量脱标、清洗和出货。",
 		"装好产线设备，开启自动销售，接下第一辆混装货车。",
 		"车库可推小推车，一趟能装三筐成品。开通专用工位和托盘调度。",
 		"接一整天的六十辆货车。整站可自动清洗、消毒和发货。",
@@ -573,11 +597,25 @@ func update_model(model, status: String) -> void:
 		detail.text = "成品 %s 只 · 破损回收 %s 只" % [comma(model.delivered-model.day_base_delivered),comma(model.recycled-model.day_base_recycled)]
 	office_title.text = Yard.AREA[model.phase]
 	office_detail.text = detail.text
+	if model.phase == Yard.BAG_UPGRADE_PHASE and model.can_upgrade_bag():
+		detail.text = "按 Tab 打开站务终端，免费升级背包。"
 	var incoming: Array = ["首批 %s 只" % comma(Yard.STARTER_SIZE),"街区散货 %s 只" % comma(Yard.STREET_SIZE),
 		"一托盘 %s 只" % comma(Yard.PALLET_SIZE),"满载货车 %s 只" % comma(Yard.TRUCK_SIZE),
 		"全天 %d 车 · %s 只" % [Yard.DAY_TRUCKS,comma(Yard.DAY_TRUCKS*Yard.TRUCK_SIZE)]]
 	place_order.text = ("接货 · " + incoming[next]) if not model.day_active else "全天调度运行中"
 	place_order.disabled = not model.can_receive()
+	bag_upgrade.disabled = not model.can_upgrade_bag()
+	bag_caption.text = "背包容量  %d 只" % model.bag_capacity()
+	bag_caption.position.y = 21.0 if model.bag_upgraded else 6.0
+	if model.bag_upgraded:
+		bag_upgrade.text = "已升级"
+		bag_details.text = ""
+	elif bag_upgrade.disabled:
+		bag_upgrade.text = "升级背包"
+		bag_details.text = "街区散货到站后解锁"
+	else:
+		bag_upgrade.text = "免费升级背包"
+		bag_details.text = "升级后可装 %d 只散瓶" % Yard.BAG_CAPACITY
 	manifest.text = "累计入库  %s 只\n破损回收  %s 只" % [comma(model.received),comma(model.recycled)]
 	if model.day_active:
 		manifest.text = "当天到货  %d / %d 车\n当天出货  %s 只" % [model.trucks,Yard.DAY_TRUCKS,comma(model.delivered-model.day_base_delivered)]
@@ -611,8 +649,19 @@ func update_model(model, status: String) -> void:
 
 
 func update_inventory(model) -> void:
-	var mode: String = "小推车" if model.pushing_cart else "随身储物"
-	carry_title.text = "%s  %d / %d" % [mode,model.carry_count(),model.carry_capacity()]
+	var mode: String = "小推车" if model.pushing_cart else "背包"
+	var count: int = model.carry_count()
+	var capacity: int = model.carry_capacity()
+	carry_title.text = "%s  %d / %d" % [mode,count,capacity]
+	var slot_step: float = minf(52.0,(CARRY_METER_WIDTH+4.0)/capacity)
+	var fill: Color = ACCENT if count == capacity else GREEN
+	for i in carry_slots.size():
+		var slot: ColorRect = carry_slots[i]
+		slot.visible = i < capacity
+		if slot.visible:
+			slot.position.x = 12.0 + i*slot_step
+			slot.size.x = slot_step-4.0
+			slot.color = fill if i < count else EMPTY_SLOT
 	var amounts := PackedInt32Array()
 	amounts.resize(Yard.NAMES.size())
 	for item in model.carried:
@@ -623,31 +672,36 @@ func update_inventory(model) -> void:
 	for kind in amounts.size():
 		if amounts[kind] > 0:
 			names.append("%s ×%d" % [Yard.NAMES[kind],amounts[kind]])
-	carry_contents.text = " · ".join(names) if not names.is_empty() else "空"
+	carry_contents.text = " · ".join(names) if not names.is_empty() else "暂无散瓶"
+	carry_secondary.text = ""
 	if model.pushing_cart:
-		carry_title.text += "   ·   成品筐 %d / %d   ·   C 停车" % [model.cart_crates.size(),Yard.CART_CRATE_LIMIT]
+		carry_secondary.text = "成品筐 %d / %d   ·   C 停车" % [model.cart_crates.size(),Yard.CART_CRATE_LIMIT]
 		if names.is_empty() and not model.cart_crates.is_empty():
 			carry_contents.text = "%d 只成品待交付" % model.transport_finished_count()
 	elif not model.hand_crate.is_empty():
-		carry_title.text = "手提成品筐 · %d 只" % model.hand_crate.size()
-		carry_contents.text = "出滑门右转去收购窗口" if names.is_empty() else "随身散瓶 · "+" · ".join(names)
+		carry_secondary.text = "手提成品筐 · %d 只" % model.hand_crate.size()
+		if names.is_empty():
+			carry_contents.text = "出滑门右转去收购窗口"
 
 
-func update_work(hand, is_working: bool, captured: bool, prompt: String, info: String) -> void:
+func update_work(hand, is_working: bool, captured: bool, prompt: String, prompt_hint: String, info: String) -> void:
 	var paperwork: bool = office.visible or journal.visible
 	var scraping: bool = is_working and hand.task() == hand.SCRAPE_LABEL
 	world_view.visible = not paperwork
 	resumable.visible = not paperwork and not captured
 	bottom.visible = is_working and captured
 	reticle.visible = not is_working and captured
-	target_label.visible = not is_working and captured
+	target_card.visible = not paperwork and not is_working and captured and not prompt.is_empty()
+	target_card.size.y = 36.0 if prompt_hint.is_empty() else 58.0
 	target_label.text = prompt
+	target_hint.text = prompt_hint
+	target_hint.visible = not prompt_hint.is_empty()
 	result.text = info
 	result.visible = captured and not paperwork
-	helper.text = ("右键转瓶    ·    左键操作    ·    R 放回当前工序    ·    Esc 离开工作台"
+	helper.text = ("右键转瓶    ·    左键操作    ·    Esc / S / R 离开操作台"
 		if is_working else "WASD 移动    ·    E 交互    ·    Tab 站务    ·    Esc 释放鼠标")
 	if scraping:
-		helper.text = "按住右键向下刮    ·    按住左键转瓶    ·    R 放回    ·    Esc 离开工作台"
+		helper.text = "按住右键向下刮    ·    按住左键转瓶    ·    Esc / S / R 离开操作台"
 	if is_working and hand.held:
 		work_name.text = Yard.NAMES[hand.type] + "  ·  " + Yard.CONDITION[hand.quality]
 		work_percent.text = "脱标 %d%%" % floori(hand.progress*100.0) if scraping else ""
@@ -667,7 +721,7 @@ func update_work(hand, is_working: bool, captured: bool, prompt: String, info: S
 			work_action.text = "用布擦掉残胶"
 			work_prompt.text = "对准残胶，按住左键左右来回擦"
 		if hand.cycle_running:
-			work_prompt.text = "仓门已关闭，消毒完成后开启" if hand.task() == "sanitize" else "瓶口朝下，等余水流进托盘"
+			work_prompt.text = "正在蒸汽消毒" if hand.task() == "sanitize" else "正在沥干，余水流入托盘"
 	hand_active = is_working and hand.held and not hand.done and hand.quality < 2 and captured and not paperwork and hand.edge_visible()
 	if hand_active:
 		hand_cursor = hand.cursor

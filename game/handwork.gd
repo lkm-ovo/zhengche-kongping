@@ -236,11 +236,11 @@ func load_bottle(item: int, from_queue: int, selected_scraper: int = 0) -> void:
 	pressed = false
 	cycle_running = false
 	washed = from_queue >= Yard.WASHED
-	wetness = .74 if washed else 0.0
-	cap_opened = type == 5 and washed
-	gasket_replaced = cap_opened
+	done = from_queue >= Yard.CLEAN
+	wetness = .74 if washed and not done else 0.0
+	gasket_replaced = type == 5 and washed
+	cap_opened = gasket_replaced and not done
 	rotating = false
-	done = false
 	turned = false
 	rotation_goal = -.08
 	lean_goal = 0.0
@@ -303,6 +303,8 @@ func load_bottle(item: int, from_queue: int, selected_scraper: int = 0) -> void:
 
 func set_work_steps(from_queue: int) -> void:
 	stages = []
+	if from_queue >= Yard.CLEAN:
+		return
 	if from_queue < Yard.WASHED:
 		stages = STEPS[type].duplicate()
 		if from_queue >= Yard.STRIPPED and type <= 1:

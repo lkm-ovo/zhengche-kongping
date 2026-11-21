@@ -5,12 +5,15 @@ const Shapes = preload("res://workshop_shapes.gd")
 const PICK_POINT = Vector3(4.65,.15,1.54)
 const FLOOR_CENTER = Vector3(6.08,0,1.54)
 const FLOOR_HALF_SIZE = Vector2(1.88,1.56)
+const SIGN_CENTER = Vector3(7.96,1.17,1.54)
+const SIGN_SIZE = Vector3(1.26,.52,.086)
 const FLOOR_CAPACITY = 72
 const BULK_PILE_CAPACITY = 960
 const INDOOR_PILE_ROWS = [4,3,5,2,6,1,7,0,8,9,10,11,12,13]
 const INDOOR_PILES = 56
 
 var count_sign: Label3D
+var reverse_count_sign: Label3D
 var floor_kinds := PackedInt32Array()
 var floor_poses: Array[Transform3D] = []
 var floor_bodies: Array[MultiMesh] = []
@@ -31,16 +34,17 @@ func build(site) -> void:
 		site.box(FLOOR_CENTER+Vector3(side*FLOOR_HALF_SIZE.x,.012,0),Vector3(.045,.008,3.13),paint,self)
 		site.box(FLOOR_CENTER+Vector3(0,.012,side*FLOOR_HALF_SIZE.y),Vector3(3.80,.008,.045),paint,self)
 	var sign_board := Node3D.new()
-	sign_board.position = Vector3(7.96,.02,1.54)
+	sign_board.position = SIGN_CENTER
 	sign_board.rotation.y = -PI*.5
 	add_child(sign_board)
-	var steel: Material = site.surface("454e44",false,5)
-	for x in [-.49,.49]:
-		site.box(Vector3(x,.57,0),Vector3(.055,1.14,.059),steel,sign_board)
-	site.rounded(Vector3(0,1.05,0),Vector3(1.10,.40,.068),.015,steel,sign_board)
-	site.text_at("车库来料区",Vector3(0,1.123,.040),56,.0027,"eee3c7",sign_board)
-	count_sign = site.text_at("",Vector3(0,.989,.040),42,.0021,"eac488",sign_board)
-	site.lamp(Vector3(5.94,3.06,1.63),"fff0d4",.82,5.5)
+	var steel: Material = site.surface("39463f",false,5)
+	for x in [-.55,.55]:
+		site.box(Vector3(x,-.59,0),Vector3(.055,1.16,.059),steel,sign_board)
+	site.rounded(Vector3.ZERO,SIGN_SIZE,.018,steel,sign_board)
+	count_sign = build_sign_face(site,sign_board,0.0,paint)
+	reverse_count_sign = build_sign_face(site,sign_board,PI,paint)
+	site.lamp(Vector3(5.94,3.06,1.63),"fff0d4",1.06,5.5)
+	site.lamp(Vector3(9.05,3.42,2.30),"f0f5e9",.68,7.7)
 	build_floor_poses()
 	build_bulk_piles(site)
 	floor_kinds.resize(FLOOR_CAPACITY)
@@ -54,10 +58,27 @@ func build(site) -> void:
 		floor_labels[kind].custom_aabb = floor_bodies[kind].custom_aabb
 
 
+func build_sign_face(site, board: Node3D, rotation_y: float, paint: Material) -> Label3D:
+	var face := Node3D.new()
+	face.rotation.y = rotation_y
+	board.add_child(face)
+	var depth: float = SIGN_SIZE.z*.5
+	site.box(Vector3(0,-.223,depth),Vector3(1.18,.024,.01),paint,face)
+	site.text_at("车库来料区",Vector3(0,.089,depth+.010),54,.0035,"fff3d4",face)
+	return site.text_at("",Vector3(0,-.087,depth+.010),44,.0030,"f0c783",face)
+
+
 func pickup_point(standing_at: Vector3, eye: Vector3, forward: Vector3) -> Vector3:
 	var feet: Vector3 = standing_at-FLOOR_CENTER
 	var outside := Vector2(maxf(0.0,absf(feet.x)-FLOOR_HALF_SIZE.x),maxf(0.0,absf(feet.z)-FLOOR_HALF_SIZE.y))
-	if outside.length_squared() > 1.15*1.15 or forward.y >= -.10:
+	if outside.length_squared() > 1.15*1.15:
+		return Vector3.INF
+	if absf(forward.x) > .01:
+		var sign_distance: float = (SIGN_CENTER.x-eye.x)/forward.x
+		var offset: Vector3 = eye+forward*sign_distance-SIGN_CENTER
+		if sign_distance > 0.0 and absf(offset.y) <= SIGN_SIZE.y*.5 and absf(offset.z) <= SIGN_SIZE.x*.5:
+			return SIGN_CENTER+offset
+	if forward.y >= -.10:
 		return Vector3.INF
 	var point: Vector3 = eye+forward*((.13-eye.y)/forward.y)
 	var from_center: Vector3 = point-FLOOR_CENTER
@@ -179,6 +200,7 @@ func sync(model) -> void:
 	sync_floor(total)
 	sync_bulk_piles()
 	count_sign.text = "%d 只待取" % total
+	reverse_count_sign.text = count_sign.text
 
 
 func sync_floor(total: int) -> void:

@@ -38,6 +38,8 @@ func run() -> void:
 		"the starting pile grows upwards from bottles on the floor")
 	check(game.ui.carry_title.text.contains("0 / 1") and not game.site.cart.visible,
 		"the worker starts with exactly one storage slot and no cart")
+	check(game.ui.bag_upgrade.disabled and not game.model.upgrade_bag(),
+		"the backpack upgrade is locked until the street shipment arrives")
 	check(game.camera.current and game.player is CharacterBody3D, "first-person character and camera")
 	while game.scene_loading:
 		await process_frame
@@ -68,6 +70,10 @@ func run() -> void:
 	game.player.position = Vector3(garage_center.x+2.12,.02,garage_center.z)
 	game.camera.look_at(garage_center+Vector3(1.22,.13,0))
 	check(game.target_under_aim() == "stock","the bottles are also reachable from the far side of the garage floor")
+	game.player.position = Vector3(8.85,.02,1.25)
+	game.camera.look_at(game.site.garage.SIGN_CENTER)
+	check(game.target_under_aim() == "stock" and game.site.garage.reverse_count_sign.text == game.site.garage.count_sign.text,
+		"the back of the stock sign can be aimed at and shows the same inventory")
 	game.player.position = aisle
 	game.camera.look_at(game.site.garage.FLOOR_CENTER+Vector3.UP*.10)
 	if game.target_under_aim() != "stock":
@@ -98,7 +104,6 @@ func run() -> void:
 		quit(1)
 		return
 	var adhesive_strength: float = game.hand.wet_glass.get_shader_parameter("adhesive_strength")
-	var stain_seed: float = game.hand.wet_glass.get_shader_parameter("stain_seed")
 	check(adhesive_strength > 0.0 and game.hand.label_mesh.visible and is_zero_approx(game.hand.label_travel),
 		"adhesive is already on the glass beneath the intact label")
 	check(game.hand.arms[0].skeleton.find_bone("SleeveUpperArm") >= 0 and
@@ -142,7 +147,20 @@ func run() -> void:
 	work_mouse(MOUSE_BUTTON_RIGHT,true)
 	await hand_frames(3)
 	check(game.hand.scrape_pressure > 0.0 and game.hand.scrape_pressure < .8,"the blade approaches before it touches the glass")
-	await hand_frames(13)
+	var leave := InputEventKey.new()
+	leave.physical_keycode = KEY_ESCAPE
+	leave.pressed = true
+	game._input(leave)
+	check(not game.working and not game.hand.pressed and game.work_button == MOUSE_BUTTON_NONE and
+		game.model.carried[0].y == Yard.RAW,"Escape releases the active scraper and leaves the unfinished bottle in storage")
+	work_mouse(MOUSE_BUTTON_RIGHT,false)
+	aim_at_station("bench")
+	game.interact()
+	var stain_seed: float = game.hand.wet_glass.get_shader_parameter("stain_seed")
+	await hand_frames(26)
+	game.hand.cursor = game.hand.hotspot()
+	work_mouse(MOUSE_BUTTON_RIGHT,true)
+	await hand_frames(16)
 	var start: Vector3 = game.hand.scraper.transform*Shapes.SCRAPER_EDGE
 	var start_height: float = (game.hand.bottle.transform.affine_inverse()*start).y
 	check(start.distance_to(game.hand.scrape_point(0.0)) < .004 and game.hand.scraper.visible and
@@ -260,6 +278,23 @@ func run() -> void:
 	await verify_manual_wash()
 	check(game.camera.fov > 61.5, "the scraping close-up opens back out for the wash and finish stations")
 	await capture("04-clean")
+	var original_crate: Array[int] = game.model.bench_crate.duplicate()
+	game.model.bench_crate.resize(game.model.crate_capacity())
+	game.model.bench_crate.fill(0)
+	game.interact()
+	check(game.working and game.model.held_queue == Yard.CLEAN,"a full crate blocks packing the finished bottle")
+	game._input(leave)
+	check(not game.working and not game.hand.held and game.camera.fov == game.WALK_FOV and
+		game.model.carried.size() == 1 and game.model.carried[0].y == Yard.CLEAN,
+		"Escape immediately exits a blocked packing station with the finished bottle")
+	var clean_save := Yard.new()
+	clean_save.restore(JSON.parse_string(JSON.stringify(game.model.serialize())))
+	check(clean_save.carried == game.model.carried and clean_save.unload_carried() == 0 and clean_save.carry_count() == 1,
+		"a stowed finished bottle survives reloading and is not put back into raw intake")
+	game.model.bench_crate.assign(original_crate)
+	aim_at_station("bench")
+	game.interact()
+	check(game.working and game.hand.done and game.hand.view_task() == "pack", "a stowed finished bottle returns straight to packing")
 	game.interact()
 	check(not game.working and game.model.carry_count() == 0 and game.model.bench_crate.size() == 1,
 		"putting away the washed bottle exits the bench with empty hands")
@@ -339,14 +374,66 @@ func run() -> void:
 	button(game.ui.place_order)
 	check(game.model.phase == 1 and game.model.in_yard() == 600, "street restock delivers 600 bottles")
 	game.site.update_site(game.model,0.0)
-	check(garage_visible_stock() == 600 and game.model.carry_capacity() == 5,
-		"street expansion draws all 600 bottles and upgrades the storage to five slots")
+	check(garage_visible_stock() == 600 and game.model.carry_capacity() == 1 and not game.ui.bag_upgrade.disabled,
+		"street expansion draws all 600 bottles and unlocks the manual backpack upgrade")
+	var street_snapshot: Dictionary = JSON.parse_string(JSON.stringify(game.model.serialize()))
+	var bag_save := Yard.new()
+	bag_save.restore(street_snapshot)
+	check(bag_save.bag_capacity() == 1 and bag_save.can_upgrade_bag(),
+		"reloading an unclaimed upgrade keeps the one-bottle backpack")
+	street_snapshot.version = 9
+	street_snapshot.erase("bag_upgraded")
+	bag_save.restore(street_snapshot)
+	check(bag_save.bag_capacity() == 5 and not bag_save.can_upgrade_bag(),
+		"legacy street saves keep their previously unlocked five slots")
+	await capture("47-backpack-upgrade")
+	var before_bag_upgrade: int = game.model.wallet_cents()
+	button(game.ui.bag_upgrade)
+	check(game.model.carry_capacity() == 5 and game.ui.bag_upgrade.disabled and game.ui.carry_title.text.contains("0 / 5") and
+		game.model.wallet_cents() == before_bag_upgrade and not game.model.upgrade_bag(),
+		"claiming the free upgrade immediately expands the HUD and can only be done once")
+	bag_save.restore(JSON.parse_string(JSON.stringify(game.model.serialize())))
+	check(bag_save.bag_capacity() == 5 and not bag_save.can_upgrade_bag(),"the claimed backpack upgrade survives reloading")
 	game.show_office(false)
 	if pictures:
 		game.player.position = Vector3(7.70,.02,4.44)
 		game.camera.look_at(Vector3(9.76,.43,2.08))
 		await capture("35-garage-bulk-piles")
-	take_at_stock(0)
+	game.player.position = Vector3(5.15,.02,2.92)
+	game.camera.look_at(game.site.garage.SIGN_CENTER)
+	check(game.target_under_aim() == "stock" and game.stock_prompt().contains("Shift + E"),
+		"the front of the stock sign offers both pickup amounts")
+	game.status_ttl = 0.0
+	var pickup := InputEventKey.new()
+	pickup.physical_keycode = KEY_E
+	pickup.pressed = true
+	pickup.shift_pressed = true
+	if pictures:
+		game._input(pickup)
+	else:
+		game.interact(true)
+	check(game.model.carry_count() == 1 and game.model.sum_queue(Yard.RAW) == 599 and
+		game.ui.carry_slots[0].color == game.ui.GREEN and game.ui.carry_slots[1].color == game.ui.EMPTY_SLOT and
+		game.ui.carry_slots[4].visible and not game.ui.carry_slots[5].visible,
+		"Shift+E takes one bottle and fills exactly one of five visible slots")
+	await capture("48-garage-pickup")
+	pickup.physical_keycode = KEY_2
+	if pictures:
+		game._input(pickup)
+	else:
+		game.take_bottle(1,true)
+	check(game.model.carry_count() == 2 and game.model.kind(game.model.carried[1].x) == 1,
+		"a modified number key takes one bottle of the selected type")
+	pickup.physical_keycode = KEY_E
+	pickup.shift_pressed = false
+	if pictures:
+		game._input(pickup)
+	else:
+		game.interact()
+	check(game.model.carry_count() == 5 and game.ui.carry_slots[4].color == game.ui.ACCENT,
+		"E fills the remaining slots and the full backpack meter turns amber")
+	aim_at_station("bench")
+	game.interact()
 	check(game.model.carry_count() == 5 and game.model.carried.size() == 4,
 		"one trip brings five bottles and the bench removes one at a time")
 	game.hand.cursor = game.hand.hotspot()
@@ -438,6 +525,7 @@ func run() -> void:
 	for type in restored.sold_by_type.size():
 		check(restored.sold_by_type[type] > 10000, "bottle type %d has its own commercial output" % type)
 	verify_migration()
+	verify_unupgraded_bag_cart()
 	verify_crate_saves()
 	await verify_market()
 	verify_legacy_volume()
@@ -790,6 +878,23 @@ func verify_manual_wash() -> void:
 	check(game.site.chamber_mist.visible and not is_equal_approx(fan_angle,game.site.chamber_fan.rotation.z),
 		"the closed manual chamber turns its fan and injects steam")
 	await capture("11-sanitize")
+	put_back.physical_keycode = KEY_S
+	game._input(put_back)
+	check(not game.working and not game.hand.cycle_running and game.model.carried[0].y == Yard.WASHED,
+		"S exits immediately during the steam cycle and retains the completed wash")
+	if pictures:
+		var table_z: float = game.player.position.z
+		key(KEY_S,true)
+		for frame in 12:
+			await physics_frame
+		key(KEY_S,false)
+		check(game.player.position.z > table_z+.10,"holding S walks the worker backward after leaving")
+	aim_at_station("bench")
+	game.interact()
+	check(game.hand.task() == "sanitize","re-entering after an interrupted steam cycle resumes at disinfection")
+	await hand_frames(36)
+	game.hand.cursor = game.hand.hotspot()
+	game.hand.press_action()
 	game.hand.pose(1.20)
 	check(game.hand.task() == "drain" and game.model.held_queue == Yard.SANITIZED, "disinfection finishes independently of a held click")
 	game.hand.cursor = game.hand.hotspot()
@@ -1076,6 +1181,24 @@ func verify_cart() -> void:
 	game.park_cart()
 	check(not game.model.pushing_cart and game.model.carry_capacity() == 5,"an empty cart can be parked")
 	game.show_office(true)
+
+
+func verify_unupgraded_bag_cart() -> void:
+	var transport := Yard.new()
+	transport.phase = Yard.STORY_TRUCK_PHASE
+	check(transport.push_cart() and transport.collect() == Yard.CART_CAPACITY,
+		"a full cart can be used even before claiming the backpack upgrade")
+	transport.park_cart(Vector3.ZERO,0.0)
+	check(transport.carry_count() == 1 and transport.parked_load.size() == 19,
+		"parking with the starting backpack leaves nineteen bottles on the cart")
+	check(transport.upgrade_bag() and transport.collect() == 4,
+		"the backpack can still be upgraded with cargo on the parked cart")
+	var restored := Yard.new()
+	restored.restore(JSON.parse_string(JSON.stringify(transport.serialize())))
+	check(not restored.push_cart() and restored.carry_count() == 5 and restored.parked_load.size() == 19,
+		"a reloaded cart keeps its entire cargo and rejects excess bottles without moving them")
+	check(restored.unload_carried() == 5 and restored.push_cart() and restored.carry_count() == 19 and restored.collect() == 1,
+		"putting the carried bottles back allows safe pickup and refill of the parked cart")
 
 
 func verify_finished_cart() -> void:

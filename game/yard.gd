@@ -57,6 +57,7 @@ const BATCH_SIZE = [STARTER_SIZE, 200, 600, 2400, 4800]
 const PHASE_MULTIPLIERS = [1, 4, 12, 40, 425]
 const STORY_TARGET = 12000
 const STORY_TRUCK_PHASE = 3
+const BAG_UPGRADE_PHASE = 1
 const BAG_CAPACITY = 5
 const CART_CAPACITY = 20
 const CRATE_CAPACITIES = [4, 8, 12, 16]
@@ -86,6 +87,7 @@ var priority: int = -1
 var held: int = -1
 var held_queue: int = RAW
 var carried: Array[Vector2i] = []
+var bag_upgraded: bool = false
 var pushing_cart: bool = false
 var parked_load: Array[Vector2i] = []
 var crate_level: int = 0
@@ -184,41 +186,57 @@ func cart_unlocked() -> bool:
 	return phase >= STORY_TRUCK_PHASE
 
 
+func bag_capacity() -> int:
+	return BAG_CAPACITY if bag_upgraded else 1
+
+
+func can_upgrade_bag() -> bool:
+	return phase >= BAG_UPGRADE_PHASE and not bag_upgraded
+
+
+func upgrade_bag() -> bool:
+	if not can_upgrade_bag():
+		return false
+	bag_upgraded = true
+	return true
+
+
 func carry_capacity() -> int:
-	if pushing_cart:
-		return CART_CAPACITY
-	return BAG_CAPACITY if phase >= 1 else 1
+	return CART_CAPACITY if pushing_cart else bag_capacity()
 
 
 func carry_count() -> int:
 	return carried.size()+int(held >= 0)
 
 
-func push_cart() -> void:
+func push_cart() -> bool:
 	if not cart_unlocked() or pushing_cart:
-		return
+		return false
+	if carry_count() + parked_load.size() > CART_CAPACITY:
+		return false
 	if not hand_crate.is_empty():
 		if cart_crates.size() == CART_CRATE_LIMIT:
-			return
+			return false
 		cart_crates.append(hand_crate.duplicate())
 		hand_crate.clear()
 	carried.append_array(parked_load)
 	parked_load.clear()
 	pushing_cart = true
+	return true
 
 
 func park_cart(at: Vector3, angle: float) -> void:
-	while carried.size() > BAG_CAPACITY:
+	while carry_count() > bag_capacity():
 		parked_load.push_front(carried.pop_back())
 	parked_at = at
 	parked_angle = angle
 	pushing_cart = false
 
 
-func collect(selected: int = -1) -> int:
+func collect(selected: int = -1, limit: int = CART_CAPACITY) -> int:
 	var before: int = carried.size()
 	var order: Array = item_order(selected)
-	for _space in range(carry_capacity()-carry_count()):
+	for _space in range(mini(limit,carry_capacity()-carry_count())):
 		var item: Vector2i = take_from_stock(order,selected)
 		if item.x < 0:
 			break
@@ -254,11 +272,15 @@ func stow_held() -> void:
 
 
 func unload_carried() -> int:
-	var count: int = carried.size()
-	for item in carried:
+	var returned: int = 0
+	for i in range(carried.size()-1,-1,-1):
+		var item: Vector2i = carried[i]
+		if item.y == CLEAN:
+			continue
 		queues[item.y][item.x] += 1
-	carried.clear()
-	return count
+		carried.remove_at(i)
+		returned += 1
+	return returned
 
 
 func return_held() -> void:
@@ -667,14 +689,15 @@ func run_machine(equipment: int, source: int, target: int, limit: int, mode: int
 
 func serialize() -> Dictionary:
 	return {
-		"version": 9, "queues": queues, "installed": installed,
+		"version": 11, "queues": queues, "installed": installed,
 		"sold_by_type": sold_by_type, "credits": credits, "received": received,
 		"credit_cents": credit_cents, "market_day": market_day, "market_elapsed": market_elapsed,
 		"bought_today": bought_today, "bought_yesterday": bought_yesterday,
 		"story_read": story_read, "story_recovered": story_recovered,
 		"delivered": delivered, "recycled": recycled, "phase": phase,
 		"priority": priority, "held": held, "held_queue": held_queue, "trucks": trucks, "clock": clock,
-		"carried": carried.map(func(item: Vector2i) -> Array: return [item.x,item.y]), "pushing_cart": pushing_cart,
+		"carried": carried.map(func(item: Vector2i) -> Array: return [item.x,item.y]), "bag_upgraded": bag_upgraded,
+		"pushing_cart": pushing_cart,
 		"parked_load": parked_load.map(func(item: Vector2i) -> Array: return [item.x,item.y]),
 		"crate_level": crate_level, "bench_crate": bench_crate, "hand_crate": hand_crate, "cart_crates": cart_crates,
 		"parked_at": [parked_at.x,parked_at.y,parked_at.z,parked_angle] if parked_at.is_finite() else [],
@@ -688,7 +711,7 @@ func restore(data: Variant) -> void:
 	if not data is Dictionary:
 		return
 	var version: int = int(data.get("version", 0))
-	if version < 1 or version > 9:
+	if version < 1 or version > 11:
 		return
 	var legacy: bool = version == 1
 	var expected_queues: int = QUEUE_NAMES.size()-int(version < 3)-int(legacy)
@@ -728,6 +751,8 @@ func restore(data: Variant) -> void:
 	delivered = int(data.delivered)
 	recycled = int(data.recycled)
 	phase = int(data.phase)
+	# Earlier saves expanded the bag automatically when the street shipment arrived.
+	bag_upgraded = phase >= BAG_UPGRADE_PHASE and (version < 10 or bool(data.get("bag_upgraded",false)))
 	story_recovered = bool(data.get("story_recovered",false))
 	check_story_recovery()
 	story_read = clampi(int(data.get("story_read",-1)),-1,story_chapter())
@@ -773,7 +798,7 @@ func restore(data: Variant) -> void:
 	rush = int(data.rush)
 	enable_auto_sales(bool(installed[PACKER]) if version < 3 else bool(data.get("auto_sales",false)))
 	if version >= 7:
-		if held_queue == CLEAN:
+		if held_queue == CLEAN and version < 11:
 			if not set_down():
 				return_held()
 		else:
@@ -781,7 +806,8 @@ func restore(data: Variant) -> void:
 		while carried.size() > carry_capacity():
 			var item: Vector2i = carried.pop_back()
 			queues[item.y][item.x] += 1
-		var parked_capacity: int = CART_CAPACITY-BAG_CAPACITY if cart_unlocked() and not pushing_cart else 0
+		# The cart may have been parked before the bag was upgraded.
+		var parked_capacity: int = CART_CAPACITY-1 if cart_unlocked() and not pushing_cart else 0
 		while parked_load.size() > parked_capacity:
 			var item: Vector2i = parked_load.pop_back()
 			queues[item.y][item.x] += 1
@@ -800,7 +826,7 @@ func read_transport(stored: Variant) -> Array[Vector2i]:
 		for pair in stored:
 			if pair is Array and pair.size() == 2:
 				var item := Vector2i(int(pair[0]),int(pair[1]))
-				if item.x >= 0 and item.x < NAMES.size()*CONDITION.size() and item.y in BENCH_QUEUES:
+				if item.x >= 0 and item.x < NAMES.size()*CONDITION.size() and item.y >= RAW and item.y <= CLEAN:
 					items.append(item)
 	return items
 
