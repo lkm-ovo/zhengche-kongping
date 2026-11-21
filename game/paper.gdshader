@@ -26,9 +26,10 @@ void fragment() {
 	float fiber = grain(floor(uv * vec2(626.0, 355.0)));
 	vec2 islands = uv + vec2(sin(uv.y*33.0), cos(uv.x*27.0)) * 0.018;
 	float adhesion = grain(floor(islands*vec2(18.0, 12.0)) + vec2(3.0, 19.0));
-	float pass_needed = scrape_passes > 1 ? step(adhesion_threshold, adhesion) : 0.0;
-	if (scrape_passes > 2) {
-		pass_needed += step(0.86, adhesion);
+	float pass_needed = 0.0;
+	if (scrape_passes > 1 && adhesion >= adhesion_threshold) {
+		float stubbornness = (adhesion - adhesion_threshold) / (1.0 - adhesion_threshold);
+		pass_needed = min(float(scrape_passes - 1), 1.0 + floor(stubbornness * float(scrape_passes - 1)));
 	}
 	float cut = clamp(scraped*float(scrape_passes) - pass_needed, 0.0, 1.0);
 	float scrape_edge = 1.0 - cut;

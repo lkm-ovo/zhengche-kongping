@@ -410,9 +410,9 @@ func build_tool_shop() -> void:
 	button(tool_shop,"返回现场  Esc","close",Vector2(884,24),Vector2(142,39))
 	var tray := panel(tool_shop,Vector2(23,107),Vector2(1004,438),PAPER)
 	var descriptions := ["钝刃会跳刀，刮下来是碎屑；补刮后还要擦掉残胶。",
-		"薄刃刮纸更利落，削下窄条；塑膜仍需补刮和擦胶。",
-		"弧刃贴合瓶身，纸标和塑膜都能成条刮下。",
-		"弹簧护座稳住刀口，最短的行程就能刮净。"]
+		"薄刃刮纸更利落，只有塑膜还需要擦胶。",
+		"弧刃贴合瓶身，纸标和塑膜都能刮净残胶。",
+		"弹簧护座稳住刀口，补刮次数最少。"]
 	for i in Yard.SCRAPERS.size():
 		var spec: Dictionary = Yard.SCRAPERS[i]
 		var row := panel(tray,Vector2(14,14+i*106),Vector2(976,92),Color("2d3d34"))
@@ -718,8 +718,11 @@ func update_work(hand, is_working: bool, captured: bool, prompt: String, prompt_
 			elif hand.pressed:
 				work_prompt.text = "保持右键，沿箭头慢慢往下拖" if hand.scrape_pressure >= .80 else "保持右键，等刀口贴住标签"
 		elif hand.task() == "scrub" and hand.glue_cleanup:
-			work_action.text = "用布擦掉残胶"
+			work_action.text = "用布擦掉残胶  ·  第 %d/%d 道" % [hand.wipe_stroke+1,hand.wipe_strokes]
+			work_percent.text = "擦胶 %d%%" % floori(hand.progress*100.0)
 			work_prompt.text = "对准残胶，按住左键左右来回擦"
+			if hand.pressed and not is_zero_approx(hand.wipe_direction):
+				work_prompt.text = "保持左键，向右擦到边" if hand.wipe_direction > 0.0 else "保持左键，向左擦到边"
 		if hand.cycle_running:
 			work_prompt.text = "正在蒸汽消毒" if hand.task() == "sanitize" else "正在沥干，余水流入托盘"
 	hand_active = is_working and hand.held and not hand.done and hand.quality < 2 and captured and not paperwork and hand.edge_visible()

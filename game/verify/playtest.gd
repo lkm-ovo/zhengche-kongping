@@ -170,9 +170,9 @@ func run() -> void:
 	game.hand.drag(Vector2(0,900))
 	await hand_frames(3)
 	check(game.hand.progress > 0.0 and game.hand.progress < .015, "a fast downward flick only scrapes a tiny section")
-	scrape_distance(103)
-	check(game.hand.scrape_passes == 2 and game.hand.progress > .29 and game.hand.progress < .35,
-		"the starter blade needs two passes on a paper label")
+	scrape_distance(117)
+	check(game.hand.scrape_passes == 10 and game.hand.progress > .06 and game.hand.progress < .075,
+		"the starter blade needs ten passes on a paper label")
 	await hand_frames(18)
 	check(game.ui.work_percent.text.contains("%") and game.ui.work_prompt.text.contains("沿箭头") and (not pictures or game.ui.scrape_guide),
 		"scraping shows live progress and a downward drag guide")
@@ -181,8 +181,8 @@ func run() -> void:
 	check(start_height-scraped_height > .032 and scraped.distance_to(game.hand.scrape_point(game.hand.stroke_travel)) < .004,
 		"the scraper edge slides down against the glass")
 	check(game.hand.cursor.distance_to(game.hand.hotspot()) < 1.0, "the scrape cursor follows the blade during the stroke")
-	check(game.hand.label_mesh.visible and game.hand.label_material.get_shader_parameter("scraped") > .29 and
-		game.site.label_offcuts.size() >= 2,"the scraped band reveals glass and drops small flakes")
+	check(game.hand.label_mesh.visible and game.hand.label_material.get_shader_parameter("scraped") > .06 and
+		not game.site.label_offcuts.is_empty(),"the scraped band reveals glass and drops small flakes")
 	var left: Node3D = game.hand.arms[0]
 	var largest_gap: float = 0.0
 	var tightest_knuckle: float = INF
@@ -225,7 +225,7 @@ func run() -> void:
 	work_mouse(MOUSE_BUTTON_RIGHT,false)
 	await hand_frames(13)
 	var blade_off: Vector3 = game.hand.scraper.transform*Shapes.SCRAPER_EDGE
-	check(game.hand.scrape_pressure == 0.0 and game.hand.label_mesh.visible and game.hand.progress > .29 and blade_off.distance_to(scraped) > .020,
+	check(game.hand.scrape_pressure == 0.0 and game.hand.label_mesh.visible and game.hand.progress > .06 and blade_off.distance_to(scraped) > .020,
 		"letting go lifts the blade and preserves the scraped band")
 	game.hand.cursor = game.hand.hotspot()
 	work_mouse(MOUSE_BUTTON_RIGHT,true)
@@ -234,17 +234,17 @@ func run() -> void:
 	check(game.hand.pressed and game.hand.scrape_point(game.hand.stroke_travel).distance_to(blade_back) < .004,
 		"scraping resumes at the partially cleared band")
 	scrape_distance(245)
-	check(game.hand.scrape_between_passes and not game.hand.pressed and is_equal_approx(game.hand.progress,.5),
+	check(game.hand.scrape_between_passes and not game.hand.pressed and is_equal_approx(game.hand.progress,.10),
 		"a long stroke stops at the first pass and leaves scraps of label")
 	game.hand.drag(Vector2(0,245))
-	check(is_equal_approx(game.hand.progress,.5), "the next pass requires a new press")
+	check(is_equal_approx(game.hand.progress,.10), "the next pass requires a new press")
 	await hand_frames(24)
 	await capture("26-old-blade-partial-label")
-	game.hand.cursor = game.hand.hotspot()
 	work_mouse(MOUSE_BUTTON_RIGHT,false)
-	work_mouse(MOUSE_BUTTON_RIGHT,true)
-	scrape_distance(168)
-	work_mouse(MOUSE_BUTTON_RIGHT,false)
+	scrape_strokes(8)
+	check(game.hand.scrape_between_passes and game.hand.label_mesh.visible and is_equal_approx(game.hand.progress,.90),
+		"a paper label still needs one more cut after nine complete passes")
+	scrape_strokes(1)
 	check(game.hand.label_removed and game.hand.task() == "scrub" and game.model.held_queue < Yard.STRIPPED,
 		"the old blade leaves adhesive that must be wiped before the checkpoint")
 	check(game.hand.view_task() == "scrape_label", "the blade finishes its stroke before wiping")
@@ -259,15 +259,46 @@ func run() -> void:
 		"wiping stays zoomed in and teaches the wiping gesture before rinsing")
 	await capture("27-wipe-adhesive")
 	game.hand.cursor = game.hand.hotspot()
-	game.hand.press_action()
-	game.hand.drag(Vector2(78,0))
+	work_mouse(MOUSE_BUTTON_LEFT,true)
+	game.hand.drag(Vector2(0,600))
+	await hand_frames(3)
+	check(is_zero_approx(game.hand.progress), "holding the cloth still or moving vertically does not wipe adhesive")
+	game.hand.drag(Vector2(900,0))
+	await hand_frames(3)
+	check(game.hand.wipe_stroke == 0 and game.hand.progress > 0.0 and game.hand.progress < .025,
+		"a single fast flick barely moves the cloth across the adhesive")
+	wipe_distance(17)
+	var short_wipe: float = game.hand.progress
+	for i in 5:
+		wipe_distance(-12)
+		wipe_distance(12)
+	check(game.hand.wipe_stroke == 0 and is_equal_approx(game.hand.progress,short_wipe),
+		"short repeated motions over the same spot do not earn more wipe progress")
+	wipe_distance(60)
+	wipe_distance(180)
+	await hand_frames(2)
+	check(game.hand.wipe_strokes == 5 and game.hand.wipe_stroke == 1 and is_equal_approx(game.hand.progress,.20) and
+		game.ui.work_percent.text == "擦胶 20%" and game.ui.work_prompt.text.contains("向左擦到边"),
+		"the cloth reaches the right edge and the work panel asks the player to reverse")
+	work_mouse(MOUSE_BUTTON_LEFT,false)
+	game.hand.drag(Vector2(-300,0))
+	await hand_frames(2)
+	check(is_equal_approx(game.hand.progress,.20), "lifting the cloth preserves the cleaned area")
+	game.hand.cursor = game.hand.hotspot()
+	work_mouse(MOUSE_BUTTON_LEFT,true)
+	wipe_distance(-110)
+	wipe_distance(47)
 	await hand_frames(4)
 	var wipe_coverage: float = game.hand.wet_glass.get_shader_parameter("wipe_coverage")
 	check(game.hand.task() == "scrub" and wipe_coverage > .45 and wipe_coverage < .52,
 		"the cloth gradually clears the surface according to wiping progress")
 	await capture("34-wipe-in-progress")
-	game.hand.drag(Vector2(-110,0))
-	game.hand.pose(0.0)
+	wipe_distance(64)
+	wipe_distance(-110)
+	check(game.hand.task() == "scrub" and game.model.held_queue < Yard.STRIPPED and is_equal_approx(game.hand.progress,.80),
+		"four sweeps still leave adhesive and keep the bottle at the raw checkpoint")
+	wipe_distance(110)
+	work_mouse(MOUSE_BUTTON_LEFT,false)
 	check(game.hand.task() == "rinse" and game.hand.surface_wiped, "wiping the adhesive unlocks rinsing")
 	check(is_equal_approx(game.hand.wet_glass.get_shader_parameter("wipe_coverage"),1.0),
 		"complete wiping leaves the glass clear for rinsing")
@@ -324,9 +355,17 @@ func run() -> void:
 			game.hand.cursor = game.hand.hotspot()
 			scrape_distance(124)
 			await hand_frames(18)
-			check(game.hand.scrape_passes == 3 and game.hand.progress > .23 and game.hand.progress < .27 and game.hand.scraper.visible,
-				"the original blade takes three passes to remove a plastic label")
+			check(game.hand.scrape_passes == 12 and game.hand.wipe_strokes == 6 and
+				game.hand.progress > .05 and game.hand.progress < .06 and game.hand.scraper.visible,
+				"the starter blade needs twelve passes and six wipes for a plastic label")
 			await capture("16-scrape-plastic")
+			scrape_distance(215)
+			scrape_strokes(10)
+			check(game.hand.scrape_pass == 11 and not game.hand.label_removed,
+				"eleven complete passes still leave plastic on the bottle")
+			scrape_strokes(1)
+			check(game.hand.label_removed and game.hand.task() == "scrub",
+				"the twelfth pass clears plastic and hands off to wiping")
 		elif pictures and game.hand.type == 2 and not shown_milk:
 			shown_milk = true
 			for frame in 25:
@@ -436,11 +475,12 @@ func run() -> void:
 	game.interact()
 	check(game.model.carry_count() == 5 and game.model.carried.size() == 4,
 		"one trip brings five bottles and the bench removes one at a time")
-	game.hand.cursor = game.hand.hotspot()
-	game.hand.press_action()
-	scrape_distance(150)
-	check(game.hand.scraper_level == 1 and game.hand.task() == "rinse" and not game.hand.glue_cleanup,
-		"the purchased thin blade clears a clean paper label in one pass")
+	scrape_strokes(6)
+	check(game.hand.scraper_level == 1 and game.hand.scrape_pass == 6 and game.hand.task() == "scrape_label",
+		"the purchased thin blade needs a seventh cut on paper")
+	scrape_strokes(1)
+	check(game.hand.task() == "rinse" and not game.hand.glue_cleanup,
+		"the thin blade skips adhesive cleanup on clean paper")
 	finish_held()
 	game.place_bottle()
 	check(game.model.carry_count() == 4 and game.status.contains("回脱标台"),
@@ -715,11 +755,13 @@ func verify_later_scrapers() -> void:
 	game.hand.cursor = game.hand.hotspot()
 	game.hand.press_action()
 	scrape_distance(85)
-	check(game.hand.scraper_level == 2 and game.hand.scrape_passes == 1 and game.hand.task() == "scrape_label" and not game.hand.glue_cleanup,
-		"the curved blade prepares plastic for one clean pass")
+	check(game.hand.scraper_level == 2 and game.hand.scrape_passes == 6 and game.hand.task() == "scrape_label" and not game.hand.glue_cleanup,
+		"the curved blade clears plastic in six passes without leaving glue")
+	var partial_cut: float = game.hand.progress
 	game.on_action("open_tools",0)
 	button(game.ui.tool_buttons[3])
-	check(game.model.equipped_scraper == 3 and game.hand.scraper_level == 2 and game.hand.progress > .6,
+	check(game.model.equipped_scraper == 3 and game.hand.scraper_level == 2 and partial_cut > .07 and
+		is_equal_approx(game.hand.progress,partial_cut),
 		"equipping a new blade preserves work on the bottle already in hand")
 	var restored := Yard.new()
 	restored.restore(JSON.parse_string(JSON.stringify(game.model.serialize())))
@@ -733,12 +775,13 @@ func verify_later_scrapers() -> void:
 	game.interact()
 	game.status_ttl = 0.0
 	await hand_frames(25)
-	game.hand.cursor = game.hand.hotspot()
-	game.hand.press_action()
 	await capture("29-spring-scraper")
-	scrape_distance(85)
-	check(game.hand.scraper_level == 3 and game.hand.scraper.get_meta("level") == 3 and game.hand.task() == "rinse",
-		"the spring blade equips on the next bottle and finishes the shorter plastic scrape")
+	scrape_strokes(3)
+	check(game.hand.scraper_level == 3 and game.hand.scraper.get_meta("level") == 3 and
+		game.hand.scrape_pass == 3 and game.hand.task() == "scrape_label",
+		"the spring blade equips on the next bottle and needs a fourth plastic pass")
+	scrape_strokes(1)
+	check(game.hand.task() == "rinse", "the spring blade clears plastic on the fourth pass and goes straight to rinsing")
 	finish_held()
 	game.place_bottle()
 	finish_remaining_storage()
@@ -1403,7 +1446,7 @@ func verify_scraper_feedback() -> void:
 		game.hand.press_action()
 		game.hand.pose(.10)
 		check(cues.is_empty() and is_zero_approx(game.hand.progress),"blade %d is silent until actually cutting" % level)
-		scrape_distance(60)
+		scrape_distance(80)
 		var sound: AudioStreamWAV = game.sources.get(spec.cue)
 		check(not cues.is_empty() and cues.all(func(id: String) -> bool: return id == spec.cue) and
 			sound != null and not sound.data.is_empty() and not waveforms.has(sound.data),"blade %d cuts with a distinct sound" % level)
@@ -1461,11 +1504,31 @@ func scrape_distance(distance: float) -> void:
 		game.hand.pose(.05)
 
 
+func scrape_strokes(count: int) -> void:
+	for i in count:
+		if game.hand.task() != game.hand.SCRAPE_LABEL:
+			return
+		game.hand.cursor = game.hand.hotspot()
+		work_mouse(MOUSE_BUTTON_RIGHT,true)
+		scrape_distance(game.hand.scrape_drag_length+8.0)
+		work_mouse(MOUSE_BUTTON_RIGHT,false)
+
+
+func wipe_distance(distance: float) -> void:
+	var frames: int = ceili(absf(distance)/3.0)
+	for i in frames:
+		if not game.hand.pressed or game.hand.task() != "scrub":
+			return
+		game.hand.drag(Vector2(distance/frames,0))
+		game.hand.pose(1.0/60.0)
+
+
 func finish_held() -> void:
 	if not game.hand.held or game.hand.quality == 2:
 		return
 	var moves: int = 0
-	while not game.hand.done and moves < 14:
+	var max_moves: int = game.hand.stages.size()+game.hand.scrape_passes
+	while not game.hand.done and moves < max_moves:
 		moves += 1
 		game.hand.cursor = game.hand.hotspot()
 		var task: String = game.hand.task()
@@ -1477,7 +1540,14 @@ func finish_held() -> void:
 		match task:
 			"scrape_label": scrape_distance(215)
 			"gasket": game.hand.drag(Vector2(0,175))
-			"brush","scrub": game.hand.drag(Vector2(250,0))
+			"brush": game.hand.drag(Vector2(250,0))
+			"scrub":
+				if game.hand.glue_cleanup:
+					for i in game.hand.wipe_strokes:
+						var direction: float = -1.0 if game.hand.wipe_direction < 0.0 else 1.0
+						wipe_distance(direction*(2.0*game.hand.WIPE_HALF_WIDTH+6.0))
+				else:
+					game.hand.drag(Vector2(250,0))
 			"bore": game.hand.drag(Vector2(0,-176))
 			"rinse","rinse_bead","sanitize","drain": game.hand.pose(game.hand.ACTIONS[task][2]+.05)
 		game.hand.pressed = false

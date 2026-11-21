@@ -18,6 +18,8 @@ const SCRAPE_RELEASE_TIME = .20
 const SCRAPE_RESET_TIME = .16
 const SCRAPE_SPEED = 95.0
 const SCRAPE_TARGET_RADIUS = 76.0
+const WIPE_HALF_WIDTH = 52.0
+const WIPE_SPEED = 225.0
 const LABEL_START = -1.13
 const LABEL_ARC = 2.48
 const LABEL_BOTTOM = .052
@@ -124,10 +126,15 @@ var scrape_release: float = 0.0
 var scrape_reset: float = 0.0
 var scraper_level: int = 0
 var scrape_pass: int = 0
-var scrape_passes: int = 2
+var scrape_passes: int = 1
 var scrape_drag_length: float = 0.0
 var scrape_between_passes: bool = false
 var glue_cleanup: bool = false
+var wipe_strokes: int = 0
+var wipe_stroke: int = 0
+var wipe_direction: float = 0.0
+var wipe_offset: float = 0.0
+var wipe_drag_pending: float = 0.0
 var surface_wiped: bool = false
 var bottle_sequence: int = 0
 var emitted_flakes: int = 0
@@ -229,7 +236,8 @@ func load_bottle(item: int, from_queue: int, selected_scraper: int = 0) -> void:
 	var material_index: int = int(type == 1)
 	scrape_passes = tool_profile.passes[material_index]
 	scrape_drag_length = tool_profile.drag[material_index]
-	glue_cleanup = type <= 1 and from_queue < Yard.STRIPPED and tool_profile.glue[material_index]
+	wipe_strokes = tool_profile.wipe_strokes[material_index] if type <= 1 and from_queue < Yard.STRIPPED else 0
+	glue_cleanup = wipe_strokes > 0
 	set_work_steps(from_queue)
 	step = 0
 	progress = 0.0
@@ -255,6 +263,10 @@ func load_bottle(item: int, from_queue: int, selected_scraper: int = 0) -> void:
 	scrape_reset = 0.0
 	scrape_pass = 0
 	scrape_between_passes = false
+	wipe_stroke = 0
+	wipe_direction = 0.0
+	wipe_offset = 0.0
+	wipe_drag_pending = 0.0
 	surface_wiped = false
 	emitted_flakes = 0
 	scraper.hide()
@@ -277,7 +289,7 @@ func load_bottle(item: int, from_queue: int, selected_scraper: int = 0) -> void:
 	label_material = labels[type].duplicate() as ShaderMaterial
 	label_material.set_shader_parameter("scrape_passes",scrape_passes)
 	label_material.set_shader_parameter("label_band",Vector2(LABEL_BOTTOM,LABEL_TOP))
-	label_material.set_shader_parameter("adhesion_threshold",.51 if scraper_level == 0 else .62)
+	label_material.set_shader_parameter("adhesion_threshold",minf(.51,1.8/scrape_passes))
 	var rows: Array = label_rows()
 	label_mesh = source.mesh_at(Shapes.lathe(rows,36,LABEL_START,LABEL_ARC),Vector3.ZERO,label_material,bottle)
 	# The thin wrap sits against the glass and does not need its own shadow caster.
@@ -444,6 +456,7 @@ func press_action() -> void:
 func release_action() -> void:
 	pressed = false
 	scrape_drag_pending = 0.0
+	wipe_drag_pending = 0.0
 
 
 func drag(relative: Vector2) -> void:
@@ -469,7 +482,11 @@ func drag(relative: Vector2) -> void:
 			scrape_drag_pending += maxf(0.0,relative.y-.25*absf(relative.x))
 			return
 		"gasket": amount = maxf(0.0, relative.y - .18 * absf(relative.x))
-		"brush","scrub": amount = maxf(0.0, absf(relative.x) - .6 * absf(relative.y))
+		"brush","scrub":
+			amount = maxf(0.0,absf(relative.x)-.6*absf(relative.y))
+			if action == "scrub" and glue_cleanup:
+				wipe_drag_pending += signf(relative.x)*amount
+				return
 		"bore": amount = maxf(0.0, -relative.y - .4 * absf(relative.x))
 	if amount > 0.0:
 		if clock - last_cue > .11:
@@ -499,11 +516,38 @@ func advance_scrape(delta: float) -> void:
 		cursor = hotspot()
 
 
+func advance_adhesive_wipe(delta: float) -> void:
+	var max_motion: float = WIPE_SPEED*minf(delta,.05)
+	var motion: float = clampf(wipe_drag_pending,-max_motion,max_motion)
+	wipe_drag_pending = 0.0
+	if not pressed or is_zero_approx(motion):
+		return
+	if is_zero_approx(wipe_direction):
+		wipe_direction = signf(motion)
+	var edge: float = wipe_direction*WIPE_HALF_WIDTH
+	wipe_offset = clampf(wipe_offset+motion,-WIPE_HALF_WIDTH,WIPE_HALF_WIDTH)
+	# Start at the middle. Every following stroke must cover the full width.
+	var distance: float = WIPE_HALF_WIDTH if wipe_stroke == 0 else 2.0*WIPE_HALF_WIDTH
+	var fraction: float = maxf(0.0,1.0-absf(edge-wipe_offset)/distance)
+	var coverage: float = (wipe_stroke+fraction)/wipe_strokes
+	if wipe_offset == edge:
+		wipe_stroke += 1
+		wipe_direction = -wipe_direction
+	if coverage > progress:
+		if clock-last_cue > .11:
+			last_cue = clock
+			sound_requested.emit("brush")
+		set_work_progress("scrub",coverage)
+
+
 func gain(amount: float, limit: float = 1.0) -> void:
 	var action: String = task()
-	if action.is_empty():
-		return
-	progress = minf(limit,progress+amount/ACTIONS[action][2])
+	if not action.is_empty():
+		set_work_progress(action,minf(limit,progress+amount/ACTIONS[action][2]))
+
+
+func set_work_progress(action: String, coverage: float) -> void:
+	progress = coverage
 	if progress >= 1.0:
 		pressed = false
 		cycle_running = false
@@ -555,6 +599,8 @@ func pose(delta: float) -> void:
 		if task() == "drain":
 			wetness = move_toward(wetness,0.0,delta*1.9)
 		gain(delta)
+	elif task() == "scrub" and glue_cleanup:
+		advance_adhesive_wipe(delta)
 	var bob: float = sin(clock*2.15) * .002
 	var center_before: Vector2 = hotspot()
 	lift_from_bench = minf(1.0,lift_from_bench + delta*4.8)
@@ -564,6 +610,7 @@ func pose(delta: float) -> void:
 	var action: String = view_task()
 	var scraping: bool = action == SCRAPE_LABEL
 	var rinsing: bool = action in RINSING
+	var wiping_glue: bool = action == "scrub" and glue_cleanup
 	var previous_bottle_basis: Basis = bottle_grip_basis() if rinsing else Basis.IDENTITY
 	var on_glass: bool = scraping and (pressed or scrape_release > .055 or scrape_reset > .076)
 	scrape_pressure = move_toward(scrape_pressure,1.0 if on_glass else 0.0,delta*10.0)
@@ -578,7 +625,7 @@ func pose(delta: float) -> void:
 	var goal: Vector3 = POSITION+Vector3(0,bob,0)+Vector3(-.061,-.117,.05)*remaining_lift
 	goal += Vector3(.001,-.004,-.004)*tension
 	var turn := Basis.from_euler(Vector3(.03-.026*tension,rotation_goal,-.08-.048*tension))
-	if scraping or (action == "scrub" and glue_cleanup):
+	if scraping or wiping_glue:
 		goal += SCRAPE_LIFT
 	elif rinsing:
 		var roll: float = -lean_goal*.83 if action == "rinse_bead" else -.10
@@ -633,8 +680,12 @@ func pose(delta: float) -> void:
 		if not on_glass:
 			tip += Vector3(reach.x,-reach.y,0)*(1.0-scrape_pressure)
 		close_at = tip-right_arm.basis*(SCRAPER_MOUNT*Shapes.SCRAPER_EDGE)
-	elif action == "scrub" and glue_cleanup:
-		var wipe_at: Vector3 = bottle.transform*Vector3(.019+reach.x*.44,.111,.051 if pressed else .073)
+	elif wiping_glue:
+		var wipe_at: Vector3 = bottle.transform*Vector3(.019+reach.x*.44,.111,.073)
+		if pressed:
+			var angle: float = .90*wipe_offset/WIPE_HALF_WIDTH
+			wipe_at = bottle.position+bottle_grip_basis()*bottle_surface(type,angle,.111,.006)
+			cursor = camera.unproject_position(to_global(wipe_at))
 		close_at = wipe_at-right_arm.basis*CLOTH_MOUNT.origin
 	elif opening_valve:
 		var lever: Vector3 = to_local(source.wash_valve_tip())

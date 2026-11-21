@@ -23,13 +23,13 @@ const AREA = ["街边回收点", "街区回收点", "小仓库", "城区回收�
 const EQUIPMENT = ["台式脱标机", "循环洗瓶机", "光学分拣机", "沥干验瓶台", "装箱发货机", "专用清洗工位", "托盘及调度系统", "蒸汽消毒机"]
 const COST = [72, 240, 440, 580, 720, 1300, 4300, 380]
 const SCRAPERS = [
-	{"name":"旧平口刮刀", "price":0, "passes":[2,3], "drag":[158.0,169.0], "glue":[true,true],
+	{"name":"旧平口刮刀", "price":0, "passes":[10,12], "drag":[180.0,190.0], "wipe_strokes":[5,6],
 		"cue":"scrape_dull", "rattle":.0023, "pieces":5, "shaving":Vector2(.86,.82)},
-	{"name":"薄刃钢刮刀", "price":24, "passes":[1,2], "drag":[139.0,104.0], "glue":[false,true],
+	{"name":"薄刃钢刮刀", "price":24, "passes":[7,9], "drag":[176.0,186.0], "wipe_strokes":[0,3],
 		"cue":"scrape_steel", "rattle":.00065, "pieces":4, "shaving":Vector2(.87,1.68)},
-	{"name":"弧面刮刀", "price":58, "passes":[1,1], "drag":[101.0,116.0], "glue":[false,false],
+	{"name":"弧面刮刀", "price":58, "passes":[5,6], "drag":[174.0,182.0], "wipe_strokes":[0,0],
 		"cue":"scrape_curve", "rattle":.0002, "pieces":3, "shaving":Vector2(1.20,2.53)},
-	{"name":"弹簧压刮刀", "price":135, "passes":[1,1], "drag":[67.0,79.0], "glue":[false,false],
+	{"name":"弹簧压刮刀", "price":135, "passes":[3,4], "drag":[172.0,178.0], "wipe_strokes":[0,0],
 		"cue":"scrape_spring", "rattle":0.0, "pieces":2, "shaving":Vector2(1.45,3.40)},
 ]
 const STARTER_STOCK = [30,4,2,19,4,1,10,2,0,0,0,0,0,0,0,0,0,0]
